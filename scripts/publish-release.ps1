@@ -35,6 +35,14 @@ if (-not $exe) {
 $asset = Join-Path $exe.DirectoryName "LabSolver-Setup-1.0.0-win64.exe"
 Copy-Item -LiteralPath $exe.FullName -Destination $asset -Force
 
+$gitExe = Join-Path ${env:ProgramFiles} "Git\bin\git.exe"
+$commit = if (Test-Path $gitExe) {
+    (& $gitExe rev-parse --short HEAD 2>$null)
+} else {
+    (Get-Command git -ErrorAction SilentlyContinue | ForEach-Object { & $_.Source rev-parse --short HEAD 2>$null })
+}
+if (-not $commit) { $commit = "unknown" }
+
 $body = @"
 ## 更新内容
 
@@ -46,7 +54,7 @@ $body = @"
 
 下载 ``LabSolver-Setup-1.0.0-win64.exe`` 双击安装。SmartScreen 提示时选「仍要运行」。
 
-代码提交: ``$(git rev-parse --short HEAD)``
+代码提交: ``$commit``
 "@
 
 if ($NotesFile -and (Test-Path $NotesFile)) {
