@@ -81,7 +81,14 @@ npm start
 build-installer.bat
 ```
 
-产物复制到 `installer/`（已在 `.gitignore` 中，不进入 git）。发布时请上传到 [GitHub Releases](https://github.com/21136/lab-solver/releases)，勿 commit 安装包。
+产物复制到 `installer/`（已在 `.gitignore` 中，不进入 git）。发布到 GitHub Releases：
+
+```powershell
+gh auth login   # 首次需登录
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish-release.ps1
+```
+
+默认创建 tag `v1.0.1` 并上传 `installer/LabSolver-Setup-1.0.0-win64.exe`。勿将安装包 commit 进 git。
 
 ### 仅启动后端 API
 
