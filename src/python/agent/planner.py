@@ -30,7 +30,7 @@ from log_util import loge, logi
 from modules.lab_parse import parse_lab_json
 
 from agent.registry import planner_module_catalog
-from modules.solve_pipeline import _CODE_KEYWORDS
+from modules.code_keywords import assignment_needs_code
 from modules.user_constraints import normalize_user_constraints, should_skip_validation
 
 # Phase 1.3: planner may only emit steps the legacy pipeline can approximate.
@@ -142,8 +142,7 @@ def report_needs_code(report_text: str) -> bool:
     text = (report_text or "").strip()
     if not text:
         return False
-    text_lower = text.lower()
-    return any(k in text or k in text_lower for k in _CODE_KEYWORDS)
+    return assignment_needs_code(text, text.lower())
 
 
 def adjust_plan_for_skip_validation(

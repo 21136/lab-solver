@@ -14,6 +14,7 @@ from agent.prompts import (
     render_write_report_prompt,
 )
 from config import _runtime_available_for
+from modules.code_keywords import assignment_needs_code
 from llm_client import chat
 from log_util import logi
 from modules.fix_code import apply_fix_to_solve_data, fix_code_from_error
@@ -37,22 +38,6 @@ _TIER_LIMITS = {
     "standard": {"max_fix": 2, "max_regen": 1, "force_skip_validation": False, "include_diagrams": False},
     "thorough": {"max_fix": 3, "max_regen": 1, "force_skip_validation": False, "include_diagrams": True},
 }
-
-_CODE_KEYWORDS = (
-    "代码",
-    "编程",
-    "程序",
-    "实现",
-    "编写",
-    "java",
-    "python",
-    "c语言",
-    "c++",
-    "javascript",
-    "算法",
-    "源码",
-)
-
 
 def pipeline_version(settings: dict | None) -> str:
     env = (os.environ.get("SOLVE_PIPELINE") or "").strip().lower()
@@ -167,7 +152,7 @@ def _combined_code(session: SolveSession) -> str:
 def _understand_brief(question: dict, language: str, constraints: list[str]) -> dict:
     full_text = (question.get("full_text") or question.get("content") or "").strip()
     text_lower = full_text.lower()
-    needs_code = any(k in full_text or k in text_lower for k in _CODE_KEYWORDS)
+    needs_code = assignment_needs_code(full_text, text_lower)
     if question.get("include_code") is False:
         needs_code = False
     brief_constraints = list(constraints)
