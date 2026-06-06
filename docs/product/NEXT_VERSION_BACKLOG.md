@@ -54,6 +54,20 @@
 
 ---
 
+## 〇-c、托管 LLM（Agnes 零配置 · 2026-06-06 ✅）
+
+**动机**：降低新用户门槛；免费 Agnes API 由开发者在本机后端托管 Key。
+
+**文档**：[HOSTED_LLM_PROVIDERS.md](../features/HOSTED_LLM_PROVIDERS.md)
+
+| 项 | 状态 |
+|----|------|
+| `hosted_providers.py` + seed/status API | ✅ |
+| 设置页 Agnes 预设、隐藏 Key 输入 | ✅ |
+| `.env.example` + `tests/test_hosted_providers.py` | ✅ |
+
+---
+
 ## 一、下一版优先项（你刻意未做 · 建议 v2.0 核心）
 
 ### 1. C2 — 画像行为学习（`apply_feedback`）

@@ -13,7 +13,7 @@
 | 降级存储 | `isEncryptionAvailable() === false` 时保留明文 `apiKey`，并 Toast 提示用户 |
 | 实现文件 | `src/main/settings-store.js`（IPC）、`src/renderer/app.js`（迁移/读写）、`preload.js` |
 | 内存使用 | 解密后的 Key 仅保留在渲染进程 `_runtimeApiKey`，供 API 请求 body 使用 |
-| 服务端持久化 | **无** — Python 后端不将 Key 写入磁盘或数据库 |
+| 服务端持久化 | **默认无** — 用户 BYOK 的 Key 不写入 Python 磁盘；**例外**：托管提供商（如 Agnes）见 [HOSTED_LLM_PROVIDERS.md](HOSTED_LLM_PROVIDERS.md) |
 | 日志 | `src/python/log_util.py` 对 `api_key`、`Bearer …`、`sk-…` 等模式脱敏后再写 `app.log` |
 
 首次启动若检测到旧版明文 `apiKey`，会在加密可用时自动迁移为 `apiKeyEncrypted` 并删除明文字段（`schema_version` 递增至 2）。
@@ -70,13 +70,15 @@ Linux 无密钥环时可退化为弱于系统密钥环的加密，仍优于长�
 
 > 系统密钥环不可用，API Key 将以明文保存在本机存储中。请勿在公共或共享电脑上保存 Key。
 
+**选择 Agnes AI（托管）时**：不显示 API Key 表单项与上述 `#keyStorageNotice`，改为 `#hostedKeyNotice`（内置免费 Key 说明）。详见 [HOSTED_LLM_PROVIDERS.md](HOSTED_LLM_PROVIDERS.md)。
+
 ---
 
 ## 4. 风险说明
 
 ### 4.1 已缓解
 
-- Key **不会**上传至本软件作者服务器（仅发往用户配置的 AI 厂商）。
+- Key **不会**上传至本软件作者服务器（BYOK 时仅发往用户配置的 AI 厂商；Agnes 托管时由本机后端直连厂商，见 [HOSTED_LLM_PROVIDERS.md](HOSTED_LLM_PROVIDERS.md)）。
 - 后端日志**不会**记录完整 Key（见 `log_util._KEY_PATTERNS`；验收见 `tests/test_log_util.py`）。
 - 设置页 **password** 输入框 + 上述「Key 存于本机」说明，提醒勿在公共电脑保存。
 
@@ -104,3 +106,4 @@ Linux 无密钥环时可退化为弱于系统密钥环的加密，仍优于长�
 
 - [Electron safeStorage](https://www.electronjs.org/docs/latest/api/safe-storage)
 - 项目内：`src/main/settings-store.js`、`src/renderer/app.js`、`src/python/log_util.py`
+- 托管 Key：[HOSTED_LLM_PROVIDERS.md](HOSTED_LLM_PROVIDERS.md)

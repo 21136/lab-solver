@@ -345,7 +345,9 @@ function runServerReadyBootstrap() {
   if (serverBootstrapDone || serverStartupFailed) return;
   serverBootstrapDone = true;
   hideLoading();
-  loadSettings();
+  readSettings();
+  ensureModelCatalog().catch(() => {});
+  seedHostedAgnesIfNeeded().catch(() => {});
   fetchLogFilePath(apiGet).catch(() => {});
   runComplianceStartupSequence(apiGet).catch(() => {});
   renderHistory();
@@ -1329,8 +1331,8 @@ async function parseGlobalRulesBrief() {
     showToast('请先填写老师总体要求', 'error');
     return;
   }
-  const settings = loadSettings();
-  if (!settings.apiKey) {
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     switchTab('settings');
     return;
@@ -1464,8 +1466,8 @@ async function parseSectionBriefForRow(idx) {
     showToast('请先在本节输入框填写内容', 'error');
     return;
   }
-  const settings = loadSettings();
-  if (!settings.apiKey) {
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     switchTab('settings');
     return;
@@ -2063,9 +2065,9 @@ const VISION_MODEL_HINTS = [
 ];
 
 function supportsVisionModel(settings) {
-  const s = settings || loadSettings();
+  const s = settings || readSettings();
   const provider = (s.provider || 'deepseek').toLowerCase();
-  const model = (s.model || 'deepseek-chat').toLowerCase();
+  const model = (s.model || 'deepseek-v4-flash').toLowerCase();
   if (provider === 'claude') {
     return ['claude-3', 'claude-sonnet', 'claude-opus', 'claude-haiku'].some((x) => model.includes(x));
   }
@@ -2080,7 +2082,7 @@ function renderAssignmentImageModeHint() {
   const hint = document.getElementById('assignmentImageModeHint');
   if (!hint) return;
 
-  const settings = loadSettings();
+  const settings = readSettings();
   const mode = settings.imageReadingMode || 'ocr_only';
   const ocrOn = settings.enableImageOcr === true;
   const visionMax = parseInt(settings.imageVisionMaxPages, 10) || 5;
@@ -2108,7 +2110,7 @@ function renderAssignmentImageModeHint() {
     if (!visionCapable) {
       parts.push('当前模型可能不支持 Vision，混合/仅 Vision 将回退或跳过');
       warn = true;
-    } else if (!settings.apiKey) {
+    } else if (needsUserApiKey(settings)) {
       parts.push('混合/仅 Vision 需要 API Key');
       warn = true;
     }
@@ -2624,7 +2626,7 @@ function applyParseResponse(resp, fileName) {
 }
 
 function getImageOcrPayload(settings) {
-  const s = settings || loadSettings();
+  const s = settings || readSettings();
   const maxPages = parseInt(s.imageOcrMaxPages, 10);
   const visionMax = parseInt(s.imageVisionMaxPages, 10);
   const readingMode = s.imageReadingMode || 'ocr_only';
@@ -2638,7 +2640,7 @@ function getImageOcrPayload(settings) {
   if (readingMode === 'hybrid' || readingMode === 'vision') {
     payload.api_key = s.apiKey || '';
     payload.provider = s.provider || 'deepseek';
-    payload.model = s.model || 'deepseek-chat';
+    payload.model = s.model || 'deepseek-v4-flash';
     payload.customUrl = s.customUrl || '';
   }
   return payload;
@@ -2810,14 +2812,14 @@ function renderParseOcrBanner(warnings) {
   uiShow(banner, 'flex');
   textEl.textContent = actionable.map((w) => w.message).join('；');
   if (btn) {
-    const settings = loadSettings();
+    const settings = readSettings();
     btn.disabled = false;
     btn.textContent = settings.enableImageOcr ? '重新解析（OCR 已开启）' : '开启 OCR 并重解析';
   }
 }
 
 async function enableOcrAndReparse() {
-  const settings = loadSettings();
+  const settings = readSettings();
   if (!settings.enableImageOcr) {
     persistSettingsPatch({ enableImageOcr: true });
     const chk = document.getElementById('enableImageOcrSettings');
@@ -4117,7 +4119,7 @@ function buildToolCardHtml(def, state) {
       <div class="tool-card-config tool-card-config-col">
         <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:6px">
           <input type="checkbox" data-tool-config="${def.id}-online"
-            ${loadSettings().umlAllowOnline !== false ? 'checked' : ''}
+            ${readSettings().umlAllowOnline !== false ? 'checked' : ''}
             onchange="onToolConfigChange('${def.id}')"/>
           PlantUML 允许在线渲染（本地 JAR 优先；DFD 始终走便携 Graphviz）
         </label>
@@ -4282,13 +4284,13 @@ function onToolConfigChange(toolId) {
 }
 
 async function executeTool(toolId) {
-  const settings = loadSettings();
+  const settings = readSettings();
   const state = toolState[toolId];
   if (!state) return;
 
   // Check API key for LLM-dependent tools
   const needsKey = ['solve', 'fix', 'revise'].includes(toolId);
-  if (needsKey && !settings.apiKey) {
+  if (needsKey && needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     switchTab('settings');
     return;
@@ -4512,7 +4514,7 @@ async function executeTool(toolId) {
 
 async function verifyDiagramsTool(toolId) {
   if (toolId !== 'uml') return;
-  const settings = loadSettings();
+  const settings = readSettings();
   const state = toolState[toolId];
   const solveOut = toolState.solve.output || {};
   const parsed = solveOut.parsed || solveOut;
@@ -4557,8 +4559,8 @@ async function verifyDiagramsTool(toolId) {
 
 async function fixDiagramsTool(toolId) {
   if (toolId !== 'uml') return;
-  const settings = loadSettings();
-  if (!settings.apiKey) {
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     switchTab('settings');
     return;
@@ -4956,7 +4958,7 @@ function collectSolveOptions(settings) {
 }
 
 function getAgentApiSettings() {
-  const settings = collectSolveOptions(loadSettings());
+  const settings = collectSolveOptions(readSettings());
   return {
     api_key: settings.apiKey,
     provider: settings.provider,
@@ -5038,8 +5040,8 @@ async function postAgentRunWithDocRetry(runPayload) {
 }
 
 async function generateAgentPlan() {
-  const settings = loadSettings();
-  if (!settings.apiKey) {
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     switchTab('settings');
     return;
@@ -5214,8 +5216,8 @@ function renderClarificationsPanel() {
 }
 
 async function submitClarifications() {
-  const settings = loadSettings();
-  if (!settings.apiKey) return;
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) return;
 
   const answers = {};
   document.querySelectorAll('[data-clarify-id]').forEach((sel) => {
@@ -5279,7 +5281,7 @@ async function postAgentPlanFeedback(confirmedSteps, fingerprint) {
       baseline_steps: agentPlanBaselineSteps,
       steps: confirmedSteps,
       document_ids: agentDocumentIds,
-      apply_to_profile: loadSettings().optimizePlanFromUsage === true,
+      apply_to_profile: readSettings().optimizePlanFromUsage === true,
       profile: getAgentApiSettings().profile,
     });
     if (resp && resp.history) {
@@ -5306,8 +5308,8 @@ function getConfirmedPlanSteps() {
 }
 
 async function executeAgentPlan() {
-  const settings = loadSettings();
-  if (!settings.apiKey) {
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     switchTab('settings');
     return;
@@ -5892,7 +5894,7 @@ function restoreAgentVersion() {
   solvedAnswers[0].code = hit.parsed.code || solvedAnswers[0].code;
   showToast(`已恢复到 v${vNum}`, 'success');
   runAgentVerify();
-  onSolveComplete(collectSolveOptions(loadSettings()));
+  onSolveComplete(collectSolveOptions(readSettings()));
 }
 
 function renderVerificationPanel(report) {
@@ -6036,7 +6038,7 @@ function openManualEdit() {
   if (!a) { showToast('没有可编辑的解题结果', 'info'); return; }
   const codeFiles = a.code_files || a.parsed?.code_files || [];
   const code = a.code || a.parsed?.code || '';
-  const settings = loadSettings();
+  const settings = readSettings();
   const lang = a.language || settings.codeLanguage || 'python';
   if (codeFiles.length) {
     showCodePanel(a, codeFiles, lang, 0, a.main_file);
@@ -6089,8 +6091,8 @@ function buildPartialRerunSteps(moduleIds) {
 
 async function runAgentPartialRerun(moduleIds) {
   if (!moduleIds?.length) return;
-  const settings = loadSettings();
-  if (!settings.apiKey) {
+  const settings = readSettings();
+  if (needsUserApiKey(settings)) {
     showToast('请先在设置中填写 API Key', 'error');
     return;
   }
@@ -6181,7 +6183,7 @@ async function requestAgentRevise(forcedScope, options = {}) {
     agentFillSections = resp.fill_sections ?? agentFillSections;
     showToast('已根据反馈修订内容', 'success');
     await runAgentVerify();
-    const settings2 = collectSolveOptions(loadSettings());
+    const settings2 = collectSolveOptions(readSettings());
     onSolveComplete(settings2);
     const rerun = options.rerunModules || agentDirtyModules;
     if (rerun?.length) {
@@ -6194,7 +6196,7 @@ async function requestAgentRevise(forcedScope, options = {}) {
 }
 
 async function applyAgentRunDone(event) {
-  const settings = collectSolveOptions(loadSettings());
+  const settings = collectSolveOptions(readSettings());
   const mr = event.module_results || {};
   let solveData = mr.solve_lab?.data || mr.solve_theory?.data;
 
@@ -6312,7 +6314,7 @@ function finishAgentRunUI(success) {
 
   updateStep3CompletionActions();
   if (success && solvedAnswers.length) {
-    const settings = loadSettings();
+    const settings = readSettings();
     onSolveComplete(settings);
     updateAgentVersionUI();
   } else if (!success) {
@@ -7351,10 +7353,160 @@ function renderHistory() {
 // 设置
 // ============================
 
-const SETTINGS_SCHEMA_VERSION = 5;
+const SETTINGS_SCHEMA_VERSION = 6;
 let _runtimeApiKey = '';
 let _encryptionAvailable = false;
 let _fallbackNotified = false;
+let _hostedProviderStatus = null;
+let _modelCatalog = null;
+
+const FALLBACK_MODEL_CATALOG = {
+  catalog_version: 1,
+  providers: {
+    deepseek: [
+      { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash（推荐）', default: true },
+      { id: 'deepseek-v4-pro', label: 'deepseek-v4-pro（高质量）' },
+    ],
+    agnes: [{ id: 'agnes-2.0-flash', label: 'agnes-2.0-flash', default: true }],
+    openai: [
+      { id: 'gpt-4o', label: 'gpt-4o', default: true },
+      { id: 'gpt-4o-mini', label: 'gpt-4o-mini' },
+      { id: 'gpt-4-turbo', label: 'gpt-4-turbo' },
+    ],
+    claude: [
+      { id: 'claude-3-5-sonnet-20241022', label: 'claude-3-5-sonnet-20241022', default: true },
+      { id: 'claude-3-haiku-20240307', label: 'claude-3-haiku-20240307' },
+    ],
+    zhipu: [
+      { id: 'glm-4-flash', label: 'glm-4-flash', default: true },
+      { id: 'glm-4', label: 'glm-4' },
+    ],
+    custom: [{ id: 'custom-model', label: 'custom-model', default: true }],
+  },
+  defaults: {
+    deepseek: 'deepseek-v4-flash',
+    agnes: 'agnes-2.0-flash',
+    openai: 'gpt-4o',
+    claude: 'claude-3-5-sonnet-20241022',
+    zhipu: 'glm-4-flash',
+    custom: 'custom-model',
+  },
+  deprecated_aliases: {
+    'deepseek-chat': { api_model: 'deepseek-v4-flash', thinking: 'disabled' },
+    'deepseek-reasoner': { api_model: 'deepseek-v4-flash', thinking: 'enabled' },
+  },
+};
+
+async function ensureModelCatalog() {
+  if (_modelCatalog) return _modelCatalog;
+  try {
+    _modelCatalog = await apiGet('/api/llm-models');
+  } catch {
+    _modelCatalog = FALLBACK_MODEL_CATALOG;
+  }
+  return _modelCatalog;
+}
+
+function migrateSavedModel(provider, model) {
+  const catalog = _modelCatalog || FALLBACK_MODEL_CATALOG;
+  const id = (model || '').trim();
+  if (catalog.deprecated_aliases?.[id]) {
+    return catalog.deprecated_aliases[id].api_model;
+  }
+  const known = (catalog.providers?.[provider] || []).map((m) => m.id);
+  if (known.length && id && !known.includes(id) && provider !== 'custom') {
+    return catalog.defaults?.[provider] || 'deepseek-v4-flash';
+  }
+  return id || catalog.defaults?.[provider] || 'deepseek-v4-flash';
+}
+
+async function renderModelSelect(provider, selectedModel) {
+  const catalog = await ensureModelCatalog();
+  const models = catalog.providers?.[provider] || [{ id: 'default', label: 'default' }];
+  const select = document.getElementById('modelSelect');
+  if (!select) return;
+  select.innerHTML = models.map((m) =>
+    `<option value="${m.id}">${m.label || m.id}</option>`
+  ).join('');
+  const wanted = migrateSavedModel(provider, selectedModel);
+  if (models.some((m) => m.id === wanted)) {
+    select.value = wanted;
+  } else {
+    select.value = models.find((m) => m.default)?.id || models[0]?.id || wanted;
+  }
+}
+
+function isHostedProvider(provider) {
+  return (provider || '').toLowerCase() === 'agnes';
+}
+
+function needsUserApiKey(settings) {
+  if (isHostedProvider(settings?.provider)) return false;
+  return !(settings?.apiKey || '').trim();
+}
+
+async function refreshHostedProviderStatus() {
+  try {
+    _hostedProviderStatus = await apiGet('/api/hosted-providers/status');
+  } catch {
+    _hostedProviderStatus = null;
+  }
+  return _hostedProviderStatus;
+}
+
+async function syncHostedProviderUI() {
+  const provider = document.getElementById('aiProvider')?.value || '';
+  const apiKeyGroup = document.getElementById('apiKeyGroup');
+  const hostedNotice = document.getElementById('hostedKeyNotice');
+  const keyNotice = document.getElementById('keyStorageNotice');
+
+  if (!isHostedProvider(provider)) {
+    if (apiKeyGroup) uiShow(apiKeyGroup, 'flex');
+    if (hostedNotice) uiHide(hostedNotice);
+    if (keyNotice) uiShow(keyNotice);
+    updateKeyStorageNotice();
+    return;
+  }
+
+  if (apiKeyGroup) uiHide(apiKeyGroup);
+  if (keyNotice) uiHide(keyNotice);
+  if (hostedNotice) {
+    uiShow(hostedNotice, 'flex');
+    const status = _hostedProviderStatus || await refreshHostedProviderStatus();
+    const textEl = document.getElementById('hostedKeyNoticeText');
+    if (textEl) {
+      textEl.textContent = status?.agnes?.configured
+        ? '已启用应用内置 Agnes 免费额度，无需自行注册或填写 Key。'
+        : '正在配置内置 Key… 若长时间无响应，请重启应用或暂时改用 DeepSeek。';
+    }
+  }
+}
+
+async function seedHostedAgnesIfNeeded() {
+  try {
+    const status = await refreshHostedProviderStatus();
+    if (status?.agnes?.configured) {
+      await syncHostedProviderUI();
+      return;
+    }
+    const provider = document.getElementById('aiProvider')?.value
+      || readSettings().provider
+      || '';
+    if (!isHostedProvider(provider)) return;
+    const key = (_runtimeApiKey || '').trim()
+      || (document.getElementById('apiKey')?.value || '').trim();
+    if (!key) return;
+    await apiPost('/api/hosted-providers/agnes/seed', { api_key: key });
+    await refreshHostedProviderStatus();
+    await persistApiKeyToStorage('');
+    const apiKeyEl = document.getElementById('apiKey');
+    if (apiKeyEl) apiKeyEl.value = '';
+    showToast('Agnes 内置 Key 已就绪', 'success');
+    await syncHostedProviderUI();
+  } catch (err) {
+    console.warn('[hosted] seed agnes failed:', err);
+  }
+}
 
 async function initSettingsStorage() {
   if (window.electronAPI?.isApiKeyEncryptionAvailable) {
@@ -7461,7 +7613,7 @@ function mergeSettings(saved) {
   const merged = {
     apiKey: _runtimeApiKey,
     provider: saved.provider || 'deepseek',
-    model: saved.model || 'deepseek-chat',
+    model: migrateSavedModel(saved.provider || 'deepseek', saved.model || 'deepseek-v4-flash'),
     codeLanguage: saved.codeLanguage || 'python',
     customUrl: saved.customUrl || '',
     includeUml: saved.includeUml === true,
@@ -7506,23 +7658,31 @@ function mergeSettings(saved) {
         merged.runMode = 'standard';
       }
     }
+    if (version < 6) {
+      migration.model = merged.model;
+    }
     persistSettingsPatch(migration);
   }
   return merged;
 }
 
-function loadSettings() {
+function readSettings() {
   const saved = JSON.parse(localStorage.getItem('settings') || '{}');
-  const settings = mergeSettings(saved);
+  return mergeSettings(saved);
+}
+
+function applySettingsToForm(settings) {
+  const apiKeyEl = document.getElementById('apiKey');
+  const providerEl = document.getElementById('aiProvider');
+  if (!apiKeyEl || !providerEl) return;
 
   const umlOnlineEl = document.getElementById('umlAllowOnlineSettings');
   if (umlOnlineEl) umlOnlineEl.checked = settings.umlAllowOnline;
   const umlStepEl = document.getElementById('includeUmlCheck');
   if (umlStepEl) umlStepEl.checked = settings.includeUml;
 
-  document.getElementById('apiKey').value = settings.apiKey;
-  document.getElementById('aiProvider').value = settings.provider;
-  document.getElementById('modelSelect').value = settings.model;
+  apiKeyEl.value = settings.apiKey;
+  providerEl.value = settings.provider;
   document.getElementById('codeLanguage').value = settings.codeLanguage;
   document.getElementById('customUrl').value = settings.customUrl;
 
@@ -7541,13 +7701,22 @@ function loadSettings() {
   syncImageOcrSettingsUI(settings);
   refreshOcrStatusNotice().catch(() => {});
   updateKeyStorageNotice();
-  onProviderChange();
+  onProviderChange({ persist: false });
+  renderModelSelect(settings.provider, settings.model).then(() => {
+    document.getElementById('modelSelect').value = settings.model;
+  });
   renderComplianceSettings(window.__labSolverLogFile || '');
+  syncHostedProviderUI().catch(() => {});
+}
+
+function loadSettings() {
+  const settings = readSettings();
+  applySettingsToForm(settings);
   return settings;
 }
 
 function syncImageOcrSettingsUI(settings) {
-  const s = settings || loadSettings();
+  const s = settings || readSettings();
   const enableEl = document.getElementById('enableImageOcrSettings');
   if (enableEl) enableEl.checked = s.enableImageOcr === true;
   const langEl = document.getElementById('imageOcrLangSettings');
@@ -7675,9 +7844,14 @@ function persistSettingsPatch(patch) {
 }
 
 async function saveSettings() {
-  const apiKey = document.getElementById('apiKey').value;
+  const provider = document.getElementById('aiProvider').value;
+  let apiKey = document.getElementById('apiKey').value;
+  if (isHostedProvider(provider)) {
+    await seedHostedAgnesIfNeeded();
+    apiKey = '';
+  }
   const settings = {
-    provider: document.getElementById('aiProvider').value,
+    provider,
     model: document.getElementById('modelSelect').value,
     codeLanguage: document.getElementById('codeLanguage').value,
     customUrl: document.getElementById('customUrl').value,
@@ -7703,37 +7877,44 @@ async function saveSettings() {
   delete saved.apiKeyStorage;
   localStorage.setItem('settings', JSON.stringify(saved));
   await persistApiKeyToStorage(apiKey);
+  await syncHostedProviderUI();
   showToast('设置已保存', 'success');
 }
 
-function onProviderChange() {
+function onProviderChange(options = {}) {
+  const { persist = true } = options;
   const provider = document.getElementById('aiProvider').value;
   const hints = {
     deepseek: 'DeepSeek API Key，在 platform.deepseek.com 获取（推荐，价格低）',
+    agnes: '使用应用内置 Agnes 免费额度（无需填写 Key）。代码题建议仍用 DeepSeek；识图请开 OCR',
     openai: 'OpenAI API Key，在 platform.openai.com 获取',
     claude: 'Anthropic API Key，在 console.anthropic.com 获取',
     zhipu: '智谱AI API Key，在 open.bigmodel.cn 获取',
     custom: '请填写自定义API Key'
   };
 
-  const models = {
-    deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-    openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
-    claude: ['claude-3-5-sonnet-20241022', 'claude-3-haiku-20240307'],
-    zhipu: ['glm-4-flash', 'glm-4'],
-    custom: ['custom-model']
-  };
-
   document.getElementById('apiKeyHint').textContent = hints[provider] || '';
-  const select = document.getElementById('modelSelect');
-  select.innerHTML = (models[provider] || ['default']).map(m =>
-    `<option value="${m}">${m}</option>`
-  ).join('');
+  const currentModel = document.getElementById('modelSelect')?.value || '';
+  renderModelSelect(provider, currentModel).then(() => {
+    const customUrlGroup = document.getElementById('customUrlGroup');
+    if (provider === 'custom') uiShow(customUrlGroup, 'flex');
+    else uiHide(customUrlGroup);
+    renderAssignmentImageModeHint();
+    if (persist) {
+      persistSettingsPatch({
+        provider,
+        model: document.getElementById('modelSelect').value,
+      });
+    }
+    syncHostedProviderUI().catch(() => {});
+  });
+}
 
-  const customUrlGroup = document.getElementById('customUrlGroup');
-  if (provider === 'custom') uiShow(customUrlGroup, 'flex');
-  else uiHide(customUrlGroup);
-  renderAssignmentImageModeHint();
+function onModelChange() {
+  persistSettingsPatch({
+    provider: document.getElementById('aiProvider').value,
+    model: document.getElementById('modelSelect').value,
+  });
 }
 
 async function testConnection() {
@@ -7745,7 +7926,7 @@ async function testConnection() {
   };
   const resultEl = document.getElementById('testResult');
 
-  if (!settings.apiKey) {
+  if (needsUserApiKey(settings)) {
     resultEl.className = 'test-result error';
     resultEl.innerHTML = icoLabel('x-circle', '请填写 API Key', 'icon-sm');
     return;

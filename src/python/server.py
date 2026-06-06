@@ -16,7 +16,15 @@ from flask_cors import CORS
 
 from config import APP_DATA, DOCX_OK, JRE_DIR, PIL_OK, TEMP_DIR, UML_RENDER_OK
 from config import detect_needs_uml
+from hosted_providers import (
+    hosted_providers_status,
+    is_hosted_configured,
+    llm_settings_error,
+    resolve_llm_settings,
+    save_hosted_api_key,
+)
 from log_util import get_log_buffer, loge, logi
+from model_registry import get_model_catalog, normalize_saved_model
 from llm_client import call_ai
 from modules.fill_report import do_fill
 from modules.fix_code import fix_code_from_error
@@ -29,6 +37,16 @@ def _solve_quality_tier_from_request(data: dict) -> str:
         data.get("solveQualityTier") or data.get("solve_quality_tier") or "standard"
     ).strip().lower()
     return tier if tier in ("fast", "standard", "thorough") else "standard"
+
+
+def _llm_settings_from_request(data: dict) -> tuple[dict | None, str | None]:
+    settings = resolve_llm_settings(data or {})
+    provider = settings.get("provider") or "deepseek"
+    settings["model"] = normalize_saved_model(provider, settings.get("model") or "")
+    err = llm_settings_error(settings)
+    if err:
+        return None, err
+    return settings, None
 
 
 from modules.run_code import execute_code, get_java_exe, java_status_info
@@ -264,12 +282,12 @@ def _parse_ocr_settings(data: dict) -> dict:
         "vision_max_pages": int(
             data.get("imageVisionMaxPages") or data.get("vision_max_pages") or 5
         ),
-        "llm_settings": {
+        "llm_settings": resolve_llm_settings({
             "api_key": data.get("api_key") or data.get("apiKey") or "",
             "provider": str(data.get("provider") or "deepseek"),
             "model": str(data.get("model") or "deepseek-chat"),
             "custom_url": data.get("customUrl") or data.get("custom_url") or "",
-        },
+        }),
     }
 
 
@@ -502,15 +520,9 @@ def _runtimes_available_fields():
 @app.route("/api/agent/parse-section-brief", methods=["POST"])
 def agent_parse_section_brief():
     data = request.json or {}
-    api_key = data.get("api_key", "")
-    if not api_key:
-        return jsonify({"error": "未填写API Key"}), 400
-    settings = {
-        "api_key": api_key,
-        "provider": data.get("provider", "deepseek"),
-        "model": data.get("model", "deepseek-chat"),
-        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
-    }
+    settings, err = _llm_settings_from_request(data)
+    if err:
+        return jsonify({"error": err}), 400
     try:
         result = parse_section_brief(
             data.get("input") or data.get("text") or "",
@@ -553,12 +565,9 @@ def agent_plan_clarify():
         profile = normalize_profile(
             merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
         )
-        settings = {
-            "api_key": data.get("api_key", ""),
-            "provider": data.get("provider", "deepseek"),
-            "model": data.get("model", "deepseek-chat"),
-            "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
-        }
+        settings, err = _llm_settings_from_request(data)
+        if err:
+            return jsonify({"error": err}), 400
         format_spec = _session_format_spec(data)
 
         ctx = make_agent_context(
@@ -642,26 +651,18 @@ def agent_plan_feedback():
 def agent_plan():
     data = request.json or {}
 
-    api_key = data.get("api_key", "")
-    provider = data.get("provider", "deepseek")
-    model = data.get("model", "deepseek-chat")
-    custom_url = data.get("custom_url", "") or data.get("customUrl", "")
+    settings, err = _llm_settings_from_request(data)
+    if err:
+        return jsonify({"error": err}), 400
+
     profile = normalize_profile(
         merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
     )
     run_mode = (data.get("run_mode") or "standard").strip().lower()
     output_mode = (data.get("output_mode") or "deliverable").strip().lower()
 
-    if not api_key:
-        return jsonify({"error": "未填写API Key"}), 400
-
-    settings = {
-        "api_key": api_key,
-        "provider": provider,
-        "model": model,
-        "custom_url": custom_url,
-        "solveQualityTier": _solve_quality_tier_from_request(data),
-    }
+    settings["solveQualityTier"] = _solve_quality_tier_from_request(data)
+    settings["run_mode"] = run_mode
 
     try:
         document_ids, bundle = store_from_request_payload(data)
@@ -838,9 +839,9 @@ def agent_plan():
 @app.route("/api/agent/run", methods=["POST"])
 def agent_run():
     data = request.json or {}
-    api_key = data.get("api_key", "")
-    if not api_key:
-        return jsonify({"error": "未填写API Key"}), 400
+    settings, err = _llm_settings_from_request(data)
+    if err:
+        return jsonify({"error": err}), 400
 
     run_mode = (data.get("run_mode") or "standard").strip().lower()
     output_mode_run = (data.get("output_mode") or "deliverable").strip().lower()
@@ -848,13 +849,8 @@ def agent_run():
     steps_in = data.get("steps") or (data.get("plan") or {}).get("steps") or []
     document_ids = [str(x) for x in (data.get("document_ids") or [])]
 
-    settings = {
-        "api_key": api_key,
-        "provider": data.get("provider", "deepseek"),
-        "model": data.get("model", "deepseek-chat"),
-        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
-        "solveQualityTier": _solve_quality_tier_from_request(data),
-    }
+    settings["solveQualityTier"] = _solve_quality_tier_from_request(data)
+    settings["run_mode"] = run_mode
     profile = normalize_profile(
         merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
     )
@@ -1056,16 +1052,10 @@ def agent_verify():
 def agent_revise():
     """Scoped revise_answer (Phase 2b B3)."""
     data = request.json or {}
-    api_key = data.get("api_key", "")
-    if not api_key:
-        return jsonify({"error": "未填写API Key"}), 400
+    settings, err = _llm_settings_from_request(data)
+    if err:
+        return jsonify({"error": err}), 400
 
-    settings = {
-        "api_key": api_key,
-        "provider": data.get("provider", "deepseek"),
-        "model": data.get("model", "deepseek-chat"),
-        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
-    }
     parsed = data.get("parsed") or {}
     solve = data.get("solve_data") or {}
     if not parsed and solve:
@@ -1229,12 +1219,10 @@ def agent_retry_step():
 
     ctx = data.get("agent_context") or data.get("ctx") or {}
     if not ctx.get("settings"):
-        ctx["settings"] = {
-            "api_key": data.get("api_key", ""),
-            "provider": data.get("provider", "deepseek"),
-            "model": data.get("model", "deepseek-chat"),
-            "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
-        }
+        resolved, err = _llm_settings_from_request(data)
+        if err:
+            return jsonify({"error": err}), 400
+        ctx["settings"] = resolved
     ctx["run_id"] = run_id
     ctx["confirmed_steps"] = data.get("steps") or ctx.get("confirmed_steps") or []
 
@@ -1257,16 +1245,16 @@ def agent_retry_step():
 def solve():
     data = request.json
     question = data.get("question", {})
-    api_key = data.get("api_key", "")
-    provider = data.get("provider", "deepseek")
-    model = data.get("model", "deepseek-chat")
-    custom_url = data.get("custom_url", "")
+    settings, err = _llm_settings_from_request(data)
+    if err:
+        return jsonify({"error": err}), 400
+
+    provider = settings["provider"]
+    model = settings["model"]
+    custom_url = settings["custom_url"]
     code_language = data.get("code_language", "")
     include_code = data.get("include_code", True)
     include_uml = data.get("include_uml", False)
-
-    if not api_key:
-        return jsonify({"error": "未填写API Key"}), 400
 
     if code_language:
         question = {**question, "preferred_lang": code_language}
@@ -1279,7 +1267,7 @@ def solve():
             f'解题 type={question.get("type")} provider={provider} model={model} lang={code_language}',
         )
         result = solve_lab(
-            api_key,
+            settings["api_key"],
             provider,
             model,
             question,
@@ -1574,25 +1562,57 @@ def fill_report():
 # ══════════════════════════════════════════════════════
 
 
+@app.route("/api/hosted-providers/status", methods=["GET"])
+def hosted_providers_status_route():
+    return jsonify(hosted_providers_status())
+
+
+@app.route("/api/llm-models", methods=["GET"])
+def llm_models_catalog():
+    return jsonify(get_model_catalog())
+
+
+@app.route("/api/hosted-providers/agnes/seed", methods=["POST"])
+def seed_hosted_agnes_key():
+    """Persist developer Agnes key for hosted free tier (once)."""
+    data = request.json or {}
+    api_key = (data.get("api_key") or data.get("apiKey") or "").strip()
+    if not api_key:
+        return jsonify({"error": "API Key 为空"}), 400
+    if is_hosted_configured("agnes"):
+        return jsonify({"ok": True, "configured": True, "already_configured": True})
+    try:
+        save_hosted_api_key("agnes", api_key)
+        logi("hosted", "Agnes hosted API key saved")
+        return jsonify({"ok": True, "configured": True, "already_configured": False})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("hosted", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/test-connection", methods=["POST"])
 def test_connection():
     data = request.json
-    api_key = data.get("apiKey", "")
-    provider = data.get("provider", "deepseek")
-    model = data.get("model", "deepseek-chat")
-    custom_url = data.get("customUrl", "")
-    if not api_key:
-        return jsonify({"error": "API Key为空"}), 400
+    settings, err = _llm_settings_from_request(data)
+    if err:
+        return jsonify({"error": err}), 400
     try:
         r = call_ai(
-            api_key,
-            provider,
-            model,
+            settings["api_key"],
+            settings["provider"],
+            settings["model"],
             {"type": "theory", "content": '回复"OK"两个字', "full_text": "回复OK"},
-            custom_url,
+            settings["custom_url"],
         )
         return jsonify(
-            {"success": True, "model": model, "response": r.get("answer", "")[:50]}
+            {
+                "success": True,
+                "model": settings["model"],
+                "response": r.get("answer", "")[:50],
+                "hosted": settings.get("hosted", False),
+            }
         )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1616,12 +1636,7 @@ def _tool_err(message: str, status=400):
 
 def _tool_settings(data: dict) -> dict:
     """Extract LLM settings from a toolbox request body."""
-    return {
-        "api_key": data.get("api_key", ""),
-        "provider": data.get("provider", "deepseek"),
-        "model": data.get("model", "deepseek-chat"),
-        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
-    }
+    return resolve_llm_settings(data)
 
 
 # ── 1. 解析文档 ──
@@ -1688,8 +1703,9 @@ def tool_solve():
     if not text:
         return _tool_err("缺少 text 或 full_text")
     settings = _tool_settings(data)
-    if not settings["api_key"]:
-        return _tool_err("未填写 API Key")
+    err = llm_settings_error(settings)
+    if err:
+        return _tool_err(err)
     try:
         question = {
             "type": "lab_report",
@@ -1753,8 +1769,9 @@ def tool_retry_validation():
     if not session:
         return _tool_err("缺少 solve_session")
     settings = _tool_settings(data)
-    if not settings["api_key"]:
-        return _tool_err("未填写 API Key")
+    err = llm_settings_error(settings)
+    if err:
+        return _tool_err(err)
     try:
         from modules.solve_pipeline import retry_pipeline_validation
         from modules.user_constraints import normalize_user_constraints
@@ -1972,8 +1989,9 @@ def tool_fix_diagrams():
     if not parsed:
         return _tool_err("缺少 answer_json / parsed")
     settings = _tool_settings(data)
-    if not settings["api_key"]:
-        return _tool_err("未填写 API Key")
+    err = llm_settings_error(settings)
+    if err:
+        return _tool_err(err)
     issues = data.get("issues")
     if issues is None and data.get("render_result"):
         from modules.diagram_verify import verify_diagrams
@@ -2079,8 +2097,9 @@ def tool_fix():
     if not code.strip():
         return _tool_err("缺少 code")
     settings = _tool_settings(data)
-    if not settings["api_key"]:
-        return _tool_err("未填写 API Key")
+    err = llm_settings_error(settings)
+    if err:
+        return _tool_err(err)
     try:
         result = fix_code_from_error(
             settings,
@@ -2147,8 +2166,9 @@ def tool_revise():
     if not feedback:
         return _tool_err("请填写修订反馈")
     settings = _tool_settings(data)
-    if not settings["api_key"]:
-        return _tool_err("未填写 API Key")
+    err = llm_settings_error(settings)
+    if err:
+        return _tool_err(err)
     try:
         result = revise_answer(
             settings,

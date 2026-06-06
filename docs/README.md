@@ -52,6 +52,8 @@
 | [DIAGRAM_EXPANSION_PLAN.md](features/DIAGRAM_EXPANSION_PLAN.md) | UML、DFD、便携 Graphviz |
 | [ENVIRONMENT_PROBE.md](features/ENVIRONMENT_PROBE.md) | L4 运行时环境探测 |
 | [KEY_STORAGE.md](features/KEY_STORAGE.md) | Electron safeStorage 方案 |
+| [HOSTED_LLM_PROVIDERS.md](features/HOSTED_LLM_PROVIDERS.md) | **Agnes 托管 Key**（零配置 · 2026-06-06 ✅） |
+| [MODEL_REGISTRY.md](features/MODEL_REGISTRY.md) | LLM 模型 catalog、弃用别名、DeepSeek V4 迁移 |
 
 ### [reference/](reference/) — 评审与过程文档
 
@@ -94,6 +96,7 @@
 | `docs/DIAGRAM_EXPANSION_PLAN.md` | `docs/features/DIAGRAM_EXPANSION_PLAN.md` |
 | `docs/ENVIRONMENT_PROBE.md` | `docs/features/ENVIRONMENT_PROBE.md` |
 | `docs/KEY_STORAGE.md` | `docs/features/KEY_STORAGE.md` |
+| `docs/HOSTED_LLM_PROVIDERS.md` | `docs/features/HOSTED_LLM_PROVIDERS.md` |
 | `docs/AI_INSIGHTS.md` | `docs/reference/AI_INSIGHTS.md` |
 | `docs/PROMPT_CRITIQUE_CHECKLIST.md` | `docs/reference/PROMPT_CRITIQUE_CHECKLIST.md` |
 | `docs/deepseek的建议.md` | `docs/reference/deepseek的建议.md` |

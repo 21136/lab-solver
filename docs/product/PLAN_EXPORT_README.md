@@ -13,7 +13,7 @@
 1. 上传或粘贴 **`../architecture/LAB_SOLVER_AGENT_PLAN.md` 全文**。
 2. 附上项目背景（可选）：
    - 桌面 Electron + Python Flask 后端
-   - 实验报告解题助手，用户自填 API Key（safeStorage 加密，见 [KEY_STORAGE.md](../features/KEY_STORAGE.md)）
+   - 实验报告解题助手，默认 BYOK（safeStorage，见 [KEY_STORAGE.md](../features/KEY_STORAGE.md)）；可选 **Agnes 托管 Key**（零配置，见 [HOSTED_LLM_PROVIDERS.md](../features/HOSTED_LLM_PROVIDERS.md)）
    - **已实现**：标准/深度/ReAct Agent、分节工作台、verify/revise、PDF 读/导出 docx、V2 动态分节（L0-L3）
    - **待补**：Step1 多文档/范文 UI、`build-installer` 打包验证
 3. 明确你希望的输出类型，例如：
@@ -48,14 +48,14 @@
 
 | 维度 | 决策 | 实现状态 |
 |------|------|----------|
-| 平台 | 保留 Electron，用户自选 LLM API Key，不用 Cursor SDK | ✅ |
+| 平台 | 保留 Electron；BYOK 或 Agnes 托管 Key，不用 Cursor SDK | ✅ |
 | 核心流 | 子模块 + Planner 步骤计划 + 用户确认后执行 | ✅ 标准/深度/ReAct |
 | 默认省流 | `run_mode=standard`（约 2 次 LLM） | ✅ |
 | 深度可选 | understand→plan→draft→preflight→reflect→execute | ✅ |
 | 运行模式 | 标准/深度/ReAct 三档；ReAct 含 **自动收尾** + `finalize_report` | ✅ |
 | UI | Step2 分节工作台；Step3 SSE + 校验修订 | ✅；Step1 多文档 + 粘贴题目 ✅ |
 | 文档 | docx/pdf 读；PDF 导出 docx；合体拆分；**粘贴题目**（`text_content`） | ✅ |
-| Key 存储 | Electron safeStorage + 降级说明 | ✅ [KEY_STORAGE.md](../features/KEY_STORAGE.md) |
+| Key 存储 | BYOK：safeStorage + 降级说明；托管：Agnes → `hosted_agnes.key` | ✅ [KEY_STORAGE.md](../features/KEY_STORAGE.md) · [HOSTED_LLM_PROVIDERS.md](../features/HOSTED_LLM_PROVIDERS.md) |
 | 已舍弃 | 第三方软件 GUI 自动操控 | — |
 | 待发布 | `build-installer.bat` 打包验证 | ⏳ |
 
@@ -74,3 +74,4 @@
 | `../v2/IM_OCR_FIRST.md` | IM2/IM3 OCR 实施详案（触发条件、数据流、验收 O1–O6） |
 | `../reference/PROMPT_CRITIQUE_CHECKLIST.md` | 分维度评审清单（可选） |
 | `../features/KEY_STORAGE.md` | API Key safeStorage 与风险说明 |
+| `../features/HOSTED_LLM_PROVIDERS.md` | Agnes 托管 Key（零配置） |

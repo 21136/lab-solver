@@ -7,6 +7,7 @@ import urllib.request
 
 from agent.prompts import render_lab_report_prompt, render_theory_prompt
 from log_util import logi
+from model_registry import merge_openai_payload, resolve_model_for_api, select_model_for_run_mode
 from modules.lab_parse import complete_lab_parsed, parse_lab_json
 
 _llm_call_count = 0
@@ -21,24 +22,24 @@ def get_llm_call_count():
     return _llm_call_count
 
 
-def select_model_for_run_mode(settings: dict, run_mode: str = "standard") -> str:
-    """Prefer reasoning model when run_mode=deep (Phase 2b)."""
-    model = (settings.get("model") or "deepseek-chat").strip()
-    provider = (settings.get("provider") or "deepseek").strip().lower()
-    if (run_mode or "standard").lower() != "deep":
-        return model
-    if provider == "deepseek" and model in ("", "deepseek-chat", "auto"):
-        return "deepseek-reasoner"
-    lowered = model.lower()
-    if any(x in lowered for x in ("reasoner", "o1", "thinking")):
-        return model
-    return model
+def _apply_model_resolution(
+    payload: dict,
+    provider: str,
+    model: str,
+    *,
+    run_mode: str = "standard",
+) -> dict:
+    resolved = resolve_model_for_api(provider, model, run_mode=run_mode)
+    payload = dict(payload)
+    payload["model"] = resolved["api_model"]
+    return merge_openai_payload(payload, resolved["payload_fields"])
 
 
 PROVIDER_URLS = {
     "deepseek": "https://api.deepseek.com/v1/chat/completions",
     "openai": "https://api.openai.com/v1/chat/completions",
     "zhipu": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+    "agnes": "https://apihub.agnes-ai.com/v1/chat/completions",
 }
 
 # Substrings that indicate a model likely accepts image content parts (IM5).
@@ -245,8 +246,9 @@ def chat_messages(
 
     api_key = settings.get("api_key", "")
     provider = (settings.get("provider") or "deepseek").strip().lower()
-    model = settings.get("model", "deepseek-chat")
+    model = settings.get("model") or "deepseek-v4-flash"
     custom_url = (settings.get("custom_url") or settings.get("customUrl") or "").strip()
+    run_mode = (settings.get("run_mode") or "standard").strip().lower()
 
     if provider == "claude":
         return _chat_messages_claude(api_key, model, messages, max_tokens, phase)
@@ -257,12 +259,17 @@ def chat_messages(
         api_url = PROVIDER_URLS.get(provider, PROVIDER_URLS["deepseek"])
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
+    payload = _apply_model_resolution(
+        {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        },
+        provider,
+        model,
+        run_mode=run_mode,
+    )
 
     req = urllib.request.Request(
         api_url, data=json.dumps(payload).encode(), headers=headers, method="POST"
@@ -331,6 +338,7 @@ def chat(
     max_tokens=4000,
     system="",
     phase="",
+    run_mode: str = "standard",
 ):
     """
     Generic chat completion for planner and future agent modules.
@@ -352,12 +360,17 @@ def chat(
     messages.append({"role": "user", "content": prompt})
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
+    payload = _apply_model_resolution(
+        {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        },
+        provider,
+        model,
+        run_mode=run_mode,
+    )
 
     req = urllib.request.Request(
         api_url, data=json.dumps(payload).encode(), headers=headers, method="POST"
@@ -418,6 +431,7 @@ def call_ai(
     custom_url="",
     include_uml=False,
     format_spec=None,
+    run_mode: str = "standard",
 ):
     global _llm_call_count
     _llm_call_count += 1
@@ -458,12 +472,17 @@ def call_ai(
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     max_tokens = 8000 if q_type == "lab_report" else 4000
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_tokens,
-        "temperature": 0.3,
-    }
+    payload = _apply_model_resolution(
+        {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        },
+        provider,
+        model,
+        run_mode=run_mode,
+    )
 
     req = urllib.request.Request(
         api_url, data=json.dumps(payload).encode(), headers=headers, method="POST"

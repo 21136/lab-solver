@@ -69,7 +69,7 @@ class TestToolHelpers:
         result = _tool_settings({})
         assert result["api_key"] == ""
         assert result["provider"] == "deepseek"
-        assert result["model"] == "deepseek-chat"
+        assert result["model"] == "deepseek-v4-flash"
         assert result["custom_url"] == ""
 
 

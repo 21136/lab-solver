@@ -193,7 +193,16 @@
 | Phase 2b | ✅ 完成 | 深度链、preflight、verify/revise、profile、PDF 读 |
 | Phase 3 | ✅ 完成 | 分节工作台、校验修订 UI、compliance、safeStorage |
 | Phase 3b | ✅ 完成 | PDF 导出 docx、配对填表 |
-| 打包 | ✅ 完成 | `build-installer.bat` 通过，生成 `installer/解题能手 Setup 1.0.0.exe`（76MB，2026-06-04） |
+| 打包 | ✅ 完成 | `build-installer.bat` 通过，生成 `installer/解题能手 Setup 1.0.0.exe`（76MB，2026-06-04）；**2026-06-06** 重打包（含 Agnes 托管 + 模型 registry） |
+
+### 2026-06-06 增量（Agnes 托管 + 模型 registry）
+
+| 项 | 内容 | 状态 |
+|----|------|------|
+| hosted-agnes | `hosted_providers.py`；内置 Agnes Key；设置页零配置 | ✅ |
+| model-registry | `model_registry.py`；DeepSeek V4 迁移；`GET /api/llm-models` | ✅ |
+| settings-v6 | `deepseek-chat`/`reasoner` → `deepseek-v4-flash` 自动迁移 | ✅ |
+| docs | [HOSTED_LLM_PROVIDERS.md](../features/HOSTED_LLM_PROVIDERS.md) · [MODEL_REGISTRY.md](../features/MODEL_REGISTRY.md) | ✅ |
 
 ### 部分完成（无 — 所有前端 UI 已交付）
 

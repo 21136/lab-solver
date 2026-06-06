@@ -1,11 +1,11 @@
 """Settings schema version for Electron localStorage migration."""
 
-SETTINGS_SCHEMA_VERSION = 5
+SETTINGS_SCHEMA_VERSION = 6
 
 SETTINGS_DEFAULTS = {
     "schema_version": SETTINGS_SCHEMA_VERSION,
     "provider": "deepseek",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "codeLanguage": "python",
     "customUrl": "",
     "includeUml": False,

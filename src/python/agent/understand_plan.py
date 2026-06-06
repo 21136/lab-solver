@@ -85,6 +85,7 @@ def understand_and_plan(
             custom_url=custom_url,
             max_tokens=4500,
             phase="understand_plan",
+            run_mode="deep",
         )
         raw = parse_lab_json(chat_result.get("content") or "")
         understand = raw.get("understand") or {}

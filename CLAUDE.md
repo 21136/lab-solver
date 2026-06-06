@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-桌面 Electron + Python Flask 后端实验报告解题助手。用户自填 LLM API Key（支持 DeepSeek/OpenAI/Claude/自定义），上传实验报告 doc/docx/pdf（旧版 .doc 自动转换），AI 生成结构化答案（文字、代码、UML），用户在答案工作区审阅复制；高级区可选填回 Word。
+桌面 Electron + Python Flask 后端实验报告解题助手。默认 **BYOK**：用户自填 LLM API Key（DeepSeek/OpenAI/Claude/智谱/自定义）；可选 **Agnes AI 托管档**（内置 Key、零配置，见 `docs/features/HOSTED_LLM_PROVIDERS.md`）。上传实验报告 doc/docx/pdf（旧版 .doc 自动转换），AI 生成结构化答案（文字、代码、UML），用户在答案工作区审阅复制；高级区可选填回 Word。
 
 ## 技术栈
 
@@ -11,9 +11,9 @@
 | 桌面壳 | Electron 31，主进程 `main.js` + `preload.js`（含 `openExternalUrl` 浏览器打开） |
 | 前端 | 原生 HTML/CSS/JS，`src/renderer/index.html` + `app.js`，Monaco 编辑器 |
 | 后端 | Python Flask，`src/python/server.py` 启动，端口 5199 |
-| LLM 调用 | `llm_client.py` 统一 OpenAI 兼容 + Claude Messages API |
+| LLM 调用 | `llm_client.py` 统一 OpenAI 兼容 + Claude Messages API；`hosted_providers.py` 托管 Key（Agnes） |
 | 文档 | python-docx (docx 读写)、PyMuPDF (PDF 读)、Word COM / LibreOffice (.doc 转换) |
-| Key 存储 | Electron safeStorage 加密 → localStorage，详见 `docs/features/KEY_STORAGE.md` |
+| Key 存储 | BYOK：`safeStorage` → localStorage；托管：`APP_DATA/hosted_agnes.key`（见 `docs/features/HOSTED_LLM_PROVIDERS.md`） |
 | 打包 | electron-builder + NSIS，`build-installer.bat` |
 | 测试 | pytest，`pytest.ini`，`tests/conftest.py` 自动加 `src/python` 到 sys.path |
 
@@ -161,6 +161,8 @@ lab-solver/
 | `docs/reference/PROMPT_CRITIQUE_CHECKLIST.md` | 7 维度评审清单 |
 | `docs/reference/AI_INSIGHTS.md` | LLM 解题自述洞察收集 + 技能学习路径（skill_store.py 注册 3 技能，executor 自动追加 Agent 模式 notes） |
 | `docs/features/KEY_STORAGE.md` | safeStorage 加密方案 + 风险说明 |
+| `docs/features/HOSTED_LLM_PROVIDERS.md` | Agnes 等托管 LLM Key（零配置） |
+| `docs/features/MODEL_REGISTRY.md` | 模型 catalog、弃用别名、DeepSeek V4 |
 | `docs/v2/V2_TOOLBOX_MODE.md` | 工具箱模式设计文档：独立工具 API + 前端面板（含 #5 图表渲染 / DFD） |
 | `docs/product/V5_PRODUCT_PIVOT.md` | **V5 战略大改**：生成优先、验证内化、用户落笔；Deliverable 主输出 |
 | `docs/product/V4_MULTI_PHASE_SOLVE.md` | V4 分阶段 LLM 流水线（技术子方案，并入 V5-1） |

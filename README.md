@@ -23,6 +23,7 @@
 - **内化验证（可选）** — 在本地沙箱试编译/试跑，仅用于提高生成质量，不替代你的实验环境
 - **工具箱模式** — 解析、解题、图表渲染、校验等 8 个独立工具，可单步调试
 - **自带 API Key** — 支持 DeepSeek、OpenAI、Claude、智谱及自定义 OpenAI 兼容端点；Key 经本机加密存储，不上传作者服务器
+- **Agnes 免费档（零配置）** — 可选 **Agnes AI（内置 Key）**，无需注册或填写 Key；适合快速试玩，代码题仍推荐 DeepSeek
 
 ### 我们刻意不主打的事
 
@@ -34,7 +35,7 @@
 
 ### 下载安装包（推荐）
 
-[GitHub Releases](https://github.com/21136/lab-solver/releases/latest) 提供 Windows 安装包（`.exe`），下载后双击安装即可。首次使用请在 **设置** 页填入 API Key。
+[GitHub Releases](https://github.com/21136/lab-solver/releases/latest) 提供 Windows 安装包（`.exe`），下载后双击安装即可。首次使用可在 **设置** 页选择 **Agnes AI（内置 Key）** 零配置试玩，或为 DeepSeek 等提供商填入 API Key。
 
 > 安装包未经代码签名，Windows 可能提示 SmartScreen，选择「仍要运行」即可。
 
@@ -70,7 +71,7 @@ npm install
 npm start
 ```
 
-首次使用请在 **设置** 页填入 LLM **API Key** 与模型名称，然后按引导完成免责声明确认。
+首次使用请在 **设置** 页选择 AI 提供商：选 **Agnes AI** 可免填 Key；选 DeepSeek 等则需填入 **API Key** 与模型名称。然后按引导完成免责声明确认。
 
 ### 自行打包安装包（Windows，开发者）
 
@@ -152,16 +153,19 @@ python -m pytest
 | [docs/architecture/LAB_SOLVER_AGENT_PLAN.md](docs/architecture/LAB_SOLVER_AGENT_PLAN.md) | Agent 完整架构 |
 | [DESIGN.md](DESIGN.md) | UI 设计规范 |
 | [docs/features/KEY_STORAGE.md](docs/features/KEY_STORAGE.md) | API Key 本地加密方案 |
+| [docs/features/HOSTED_LLM_PROVIDERS.md](docs/features/HOSTED_LLM_PROVIDERS.md) | Agnes 等托管 Key（零配置） |
+| [docs/features/MODEL_REGISTRY.md](docs/features/MODEL_REGISTRY.md) | 模型 catalog 与弃用迁移 |
 
 ---
 
 ## 隐私与安全
 
-- API Key 优先通过 Electron `safeStorage` 加密保存在本机；Python 后端**不**持久化 Key
+- **BYOK**（DeepSeek / OpenAI 等）：API Key 优先通过 Electron `safeStorage` 加密保存在本机；Python 后端不持久化用户 Key
+- **Agnes 托管档**：Key 存于本机 `%APPDATA%/lab-solver/hosted_agnes.key`（或环境变量 `AGNES_API_KEY`），用户不可见；详见 [HOSTED_LLM_PROVIDERS.md](docs/features/HOSTED_LLM_PROVIDERS.md)
 - 实验报告全文会按你的设置发送至所选 AI 服务商用于解题
 - 运行日志经脱敏后写入本机，便于排查问题
 
-详见应用内 **隐私说明** 与 [KEY_STORAGE.md](docs/features/KEY_STORAGE.md)。
+详见应用内 **隐私说明**、[KEY_STORAGE.md](docs/features/KEY_STORAGE.md) 与 [HOSTED_LLM_PROVIDERS.md](docs/features/HOSTED_LLM_PROVIDERS.md)。
 
 ---
 
@@ -189,7 +193,7 @@ Issue 与 Pull Request 欢迎。大型改动请先阅读 [docs/architecture/IMPL
 
 ## English Summary
 
-**Lab Solver** is a Windows desktop app for drafting university lab reports with your own LLM API key (DeepSeek, OpenAI, Claude, custom endpoints). Upload assignments as Word/PDF/images, choose standard/deep/ReAct solving modes, and export structured answers (text, code, UML/DFD diagrams) from a review workspace. BYOK, local key encryption, optional sandboxed code verification. Not intended for plagiarism — users must review and adapt all output before submission.
+**Lab Solver** is a Windows desktop app for drafting university lab reports with your own LLM API key (DeepSeek, OpenAI, Claude, custom endpoints) or zero-config **Agnes AI (hosted key)**. Upload assignments as Word/PDF/images, choose standard/deep/ReAct solving modes, and export structured answers (text, code, UML/DFD diagrams) from a review workspace. BYOK with local key encryption, optional sandboxed code verification. Not intended for plagiarism — users must review and adapt all output before submission.
 
 ```bash
 start.bat    # Windows quick start

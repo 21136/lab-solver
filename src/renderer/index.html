@@ -818,13 +818,14 @@
                   <label>AI 提供商</label>
                   <select class="form-select" id="aiProvider" onchange="onProviderChange()">
                     <option value="deepseek">DeepSeek（推荐，便宜）</option>
+                    <option value="agnes">Agnes AI（免费·内置 Key）</option>
                     <option value="openai">OpenAI (GPT-4)</option>
                     <option value="claude">Anthropic (Claude)</option>
                     <option value="zhipu">智谱AI (GLM-4)</option>
                     <option value="custom">自定义API</option>
                   </select>
                 </div>
-                <div class="form-group">
+                <div class="form-group" id="apiKeyGroup">
                   <label>API Key</label>
                   <div class="input-with-btn">
                     <input type="password" class="form-input" id="apiKey" placeholder="sk-..." />
@@ -836,15 +837,21 @@
                     <span>经操作系统加密（safeStorage）后保存在本机，不会上传至软件作者服务器；调用 AI 时经 HTTPS 发送至您选择的厂商。请勿在公共或共享电脑上保存 Key。</span>
                   </div>
                 </div>
+                <div class="form-group is-hidden" id="hostedKeyNotice" role="note">
+                  <div class="key-storage-notice hosted-key-notice">
+                    <strong>内置免费 Key</strong>
+                    <span id="hostedKeyNoticeText">已启用应用内置 Agnes 免费额度，无需自行注册或填写 Key。</span>
+                  </div>
+                </div>
                 <div class="form-group is-hidden" id="customUrlGroup">
                   <label>自定义API地址</label>
                   <input type="text" class="form-input" id="customUrl" placeholder="https://your-api.com/v1" />
                 </div>
                 <div class="form-group">
                   <label>模型</label>
-                  <select class="form-select" id="modelSelect">
-                    <option value="deepseek-chat">deepseek-chat（推荐）</option>
-                    <option value="deepseek-reasoner">deepseek-reasoner（推理增强）</option>
+                  <select class="form-select" id="modelSelect" onchange="onModelChange()">
+                    <option value="deepseek-v4-flash">deepseek-v4-flash（推荐）</option>
+                    <option value="deepseek-v4-pro">deepseek-v4-pro（高质量）</option>
                   </select>
                 </div>
                 <div class="form-group">

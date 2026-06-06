@@ -62,6 +62,7 @@ def run_reflect(
             custom_url=settings.get("custom_url") or settings.get("customUrl") or "",
             max_tokens=2000,
             phase="reflect",
+            run_mode="deep",
         )
         raw = parse_lab_json(result.get("content") or "")
         if "pass" not in raw and "issues" in raw:
