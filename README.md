@@ -46,7 +46,15 @@
 
 ## 快速开始
 
-### 环境要求
+### 下载安装包（推荐）
+
+[GitHub Releases](https://github.com/21136/lab-solver/releases/latest) 提供 Windows 安装包（`.exe`），下载后双击安装即可。首次使用请在 **设置** 页填入 API Key。
+
+> 安装包未经代码签名，Windows 可能提示 SmartScreen，选择「仍要运行」即可。
+
+### 从源码运行
+
+#### 环境要求
 
 | 组件 | 版本 |
 |------|------|
@@ -59,8 +67,6 @@
 - **Tesseract OCR** — 题目截图文字识别
 - **Java / GCC** — 代码内化验证
 - **Microsoft Word 或 LibreOffice** — 旧版 `.doc` 转换
-
-### 从源码运行
 
 ```bash
 git clone https://github.com/21136/lab-solver.git
@@ -80,13 +86,15 @@ npm start
 
 首次使用请在 **设置** 页填入 LLM **API Key** 与模型名称，然后按引导完成免责声明确认。
 
-### 打包安装包（Windows）
+### 自行打包安装包（Windows，开发者）
+
+脚本使用相对路径（`%~dp0` / `$RepoRoot`），**不绑定你的电脑路径**；克隆仓库后在项目根目录运行即可：
 
 ```bash
 build-installer.bat
 ```
 
-输出目录见 `package.json` → `build.directories.output`（默认 `../lab-solver-out`）。
+产物复制到 `installer/`（已在 `.gitignore` 中，不进入 git）。发布时请上传到 [GitHub Releases](https://github.com/21136/lab-solver/releases)，勿 commit 安装包。
 
 ### 仅启动后端 API
 
