@@ -9,8 +9,19 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location $RepoRoot
 
-$gh = Get-Command gh -ErrorAction SilentlyContinue
-if (-not $gh) {
+$ghExe = $null
+$ghCmd = Get-Command gh -ErrorAction SilentlyContinue
+if ($ghCmd) {
+    $ghExe = $ghCmd.Source
+} else {
+    foreach ($p in @(
+            "${env:ProgramFiles}\GitHub CLI\gh.exe",
+            "${env:LocalAppData}\Programs\GitHub CLI\gh.exe"
+        )) {
+        if (Test-Path $p) { $ghExe = $p; break }
+    }
+}
+if (-not $ghExe) {
     Write-Error "GitHub CLI (gh) not found. Install from https://cli.github.com/ and run: gh auth login"
 }
 
@@ -43,7 +54,7 @@ if ($NotesFile -and (Test-Path $NotesFile)) {
 }
 
 Write-Host "Creating release $Tag with asset: $asset"
-& gh release create $Tag $asset `
+& $ghExe release create $Tag $asset `
     --repo "21136/lab-solver" `
     --title $Title `
     --notes $body `
