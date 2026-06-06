@@ -41,6 +41,167 @@ PROVIDER_URLS = {
     "zhipu": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
 }
 
+# Substrings that indicate a model likely accepts image content parts (IM5).
+_VISION_MODEL_HINTS = (
+    "gpt-4o",
+    "gpt-4-turbo",
+    "gpt-4-vision",
+    "gpt-4.1",
+    "o1",
+    "o3",
+    "glm-4v",
+    "glm4v",
+    "qwen-vl",
+    "qwen2-vl",
+    "qwen3-vl",
+    "deepseek-vl",
+    "deepseek-v2",
+    "claude-3",
+    "claude-sonnet",
+    "claude-opus",
+    "claude-haiku",
+    "vision",
+    "vl-",
+    "-vl",
+)
+
+VISION_ASSIGNMENT_PROMPT = (
+    "这是一道实验/作业题目页的截图。请逐字提取图中的文字内容"
+    "（实验目的、步骤、要求、表格文字等）。不要解读电路图或流程图结构，"
+    "只输出提取到的文字。若图中无文字，回复「（无文字）」。"
+)
+
+
+def supports_vision(settings: dict) -> bool:
+    """Return True when the configured provider/model likely accepts image input."""
+    provider = (settings.get("provider") or "deepseek").strip().lower()
+    model = (settings.get("model") or "deepseek-chat").strip().lower()
+    if provider == "claude":
+        return any(x in model for x in ("claude-3", "claude-sonnet", "claude-opus", "claude-haiku"))
+    return any(h in model for h in _VISION_MODEL_HINTS)
+
+
+def _vision_data_url(mime: str, b64: str) -> str:
+    mt = (mime or "image/png").split(";")[0].strip() or "image/png"
+    return f"data:{mt};base64,{b64}"
+
+
+def build_vision_user_content(
+    prompt: str,
+    *,
+    image_b64: str,
+    mime: str = "image/png",
+) -> list[dict]:
+    """OpenAI-compatible multimodal user content parts."""
+    return [
+        {"type": "text", "text": prompt},
+        {
+            "type": "image_url",
+            "image_url": {"url": _vision_data_url(mime, image_b64)},
+        },
+    ]
+
+
+def _build_claude_vision_content(prompt: str, *, image_b64: str, mime: str) -> list[dict]:
+    mt = (mime or "image/png").split(";")[0].strip() or "image/png"
+    return [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": mt, "data": image_b64},
+        },
+        {"type": "text", "text": prompt},
+    ]
+
+
+def chat_vision(
+    settings: dict,
+    *,
+    image_b64: str,
+    prompt: str = VISION_ASSIGNMENT_PROMPT,
+    mime: str = "image/png",
+    phase: str = "vision_read",
+    max_tokens: int = 2000,
+) -> dict:
+    """
+    Single-image vision completion (IM5).
+    Returns ChatResult-shaped dict with content / usage.
+    """
+    global _llm_call_count
+    _llm_call_count += 1
+
+    api_key = settings.get("api_key") or settings.get("apiKey") or ""
+    provider = (settings.get("provider") or "deepseek").strip().lower()
+    model = settings.get("model") or "deepseek-chat"
+    custom_url = (settings.get("custom_url") or settings.get("customUrl") or "").strip()
+
+    if provider == "claude":
+        headers = {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{
+                "role": "user",
+                "content": _build_claude_vision_content(prompt, image_b64=image_b64, mime=mime),
+            }],
+        }
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=json.dumps(payload).encode(),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=120) as r:
+            resp = json.loads(r.read().decode())
+        answer = resp["content"][0]["text"].strip()
+        return {
+            "content": answer,
+            "reasoning_content": "",
+            "phase": phase,
+            "finish_reason": resp.get("stop_reason") or "",
+            "usage": {},
+        }
+
+    if provider == "custom" and custom_url:
+        api_url = custom_url.rstrip("/") + "/chat/completions"
+    else:
+        api_url = PROVIDER_URLS.get(provider, PROVIDER_URLS["deepseek"])
+
+    messages = [{
+        "role": "user",
+        "content": build_vision_user_content(prompt, image_b64=image_b64, mime=mime),
+    }]
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+    }
+    req = urllib.request.Request(
+        api_url, data=json.dumps(payload).encode(), headers=headers, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            resp = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        raise Exception(f"Vision API HTTP {e.code}: {body[:300]}") from e
+
+    msg = resp["choices"][0]["message"]
+    choice = resp["choices"][0]
+    usage = resp.get("usage") or {}
+    return {
+        "content": (msg.get("content") or "").strip(),
+        "reasoning_content": (msg.get("reasoning_content") or "").strip(),
+        "phase": phase,
+        "finish_reason": choice.get("finish_reason") or "",
+        "usage": usage,
+    }
+
 
 def detect_lang_from_code(code):
     if not code:

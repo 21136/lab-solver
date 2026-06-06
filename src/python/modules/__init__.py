@@ -1,6 +1,6 @@
 """Lab-solver capability modules (Phase 1.1)."""
 
-from . import deliverable, fill_report, lab_parse, parse_report, run_code, screenshot, solve_lab, solve_pipeline, uml
+from . import deliverable, fill_report, lab_parse, parse_report, run_code, solve_lab, uml
 from .fill_report import do_fill
 from .parse_report import (
     build_question_from_docx,
@@ -19,7 +19,6 @@ __all__ = [
     "parse_report",
     "solve_lab",
     "run_code",
-    "screenshot",
     "uml",
     "deliverable",
     "fill_report",

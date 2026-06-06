@@ -118,6 +118,33 @@ def split_combined_text(
     return assignment_text, fill_body_text, heading
 
 
+def apply_assignment_text_override(bundle: dict[str, Any], override: str) -> None:
+    """Rebuild planner_input_text after O30 user edits assignment_text."""
+    text = (override or "").strip()
+    if not text:
+        return
+    bundle["assignment_text"] = text
+    fill_body = ""
+    ft = bundle.get("fill_target")
+    if isinstance(ft, dict):
+        fill_body = ft.get("full_text") or ""
+    if not fill_body:
+        fill_body = bundle.get("fill_body_text") or bundle.get("report_text") or ""
+    references: list[str] = []
+    for d in bundle.get("documents") or []:
+        if not isinstance(d, dict) or d.get("role") != "reference":
+            continue
+        ref = (d.get("full_text") or d.get("report_text") or "")[:3000]
+        if ref.strip():
+            references.append(ref)
+    bundle["planner_input_text"] = build_planner_input_text(
+        assignment_text=text,
+        fill_body_text=fill_body,
+        reference_excerpts=references,
+        layout=bundle.get("layout") or "fill_only",
+    )
+
+
 def build_planner_input_text(
     *,
     assignment_text: str,
@@ -235,6 +262,242 @@ def parse_inline_text(
     }
 
 
+def _apply_ocr_to_assignment_text(assignment_text: str, metadata: dict) -> str:
+    """Append IM2 OCR merge segment to assignment_text for planner_input."""
+    ocr_merged = (metadata.get("image_ocr_merged") or "").strip()
+    if not ocr_merged:
+        return assignment_text
+    base = (assignment_text or "").strip()
+    if base:
+        return base + "\n\n" + ocr_merged
+    return ocr_merged
+
+
+def _apply_user_upload_assignment_images(
+    result: dict[str, Any],
+    assignment_images: list[dict[str, Any]],
+    *,
+    enable_image_ocr: bool = False,
+    ocr_lang: str = "chi_sim+eng",
+    ocr_max_pages: int = 20,
+    image_reading_mode: str = "ocr_only",
+    vision_max_pages: int = 5,
+    llm_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Merge Step1 user-uploaded assignment images (IM4) into parse result."""
+    if not assignment_images:
+        return result
+
+    from document.user_upload_images import process_user_upload_images
+
+    base_assignment = (result.get("assignment_text") or "").strip()
+    upload = process_user_upload_images(
+        assignment_images,
+        enable_image_ocr=enable_image_ocr,
+        ocr_lang=ocr_lang,
+        ocr_max_pages=ocr_max_pages,
+        body_text=base_assignment,
+        image_reading_mode=image_reading_mode,
+        vision_max_pages=vision_max_pages,
+        llm_settings=llm_settings,
+    )
+    upload_assets = upload.get("image_assets") or []
+    upload_meta = upload.get("image_bundle_meta") or {}
+
+    result["assignment_text"] = upload.get("assignment_text") or base_assignment
+    result["assignment_from_images"] = bool(
+        result.get("assignment_from_images") or upload.get("assignment_from_images")
+    )
+    if upload.get("image_reading_mode"):
+        result["image_reading_mode"] = upload["image_reading_mode"]
+    if upload.get("image_read_summary"):
+        result["image_read_summary"] = upload["image_read_summary"]
+    if upload.get("image_sections"):
+        result["image_sections"] = upload["image_sections"]
+
+    all_warnings = list(result.get("warnings") or [])
+    all_warnings.extend(upload.get("warnings") or [])
+    result["warnings"] = all_warnings
+
+    primary_meta = dict(result.get("metadata") or {})
+    doc_assets = list(primary_meta.get("image_assets") or [])
+    primary_meta["image_assets"] = doc_assets + upload_assets
+    bundle_meta = dict(primary_meta.get("image_bundle_meta") or {})
+    bundle_meta["user_upload_total"] = upload_meta.get("total", len(upload_assets))
+    bundle_meta["user_upload_deduped"] = upload_meta.get("deduped", len(upload_assets))
+    primary_meta["image_bundle_meta"] = bundle_meta
+    if upload.get("assignment_from_images"):
+        primary_meta["assignment_from_images"] = True
+        primary_meta["document_assignment_text"] = result["assignment_text"]
+        primary_meta["image_ocr_merged"] = upload.get("image_ocr_merged") or ""
+        primary_meta["image_read_summary"] = upload.get("image_read_summary")
+        primary_meta["image_sections"] = upload.get("image_sections") or []
+    result["metadata"] = primary_meta
+
+    fill_body = ""
+    primary = (result.get("fill_target") or {}) if result.get("fill_target") else {}
+    if primary:
+        fill_body = primary.get("full_text") or result.get("report_text") or ""
+    else:
+        fill_body = result.get("report_text") or ""
+
+    references = []
+    for d in result.get("documents") or []:
+        if d.get("role") == "reference":
+            meta = d.get("metadata") or {}
+            ref_text = meta.get("full_text") or ""
+            if ref_text:
+                references.append(ref_text[:3000])
+
+    result["planner_input_text"] = build_planner_input_text(
+        assignment_text=result["assignment_text"],
+        fill_body_text=fill_body,
+        reference_excerpts=references,
+        layout=result.get("layout") or "assignment_only",
+    )
+
+    bundles = list(result.get("_bundles") or [])
+    if bundles:
+        bundles[0]["assignment_text"] = result["assignment_text"]
+        bundles[0]["planner_input_text"] = result["planner_input_text"]
+        bundles[0]["assignment_from_images"] = result["assignment_from_images"]
+        bmeta = dict(bundles[0].get("metadata") or {})
+        bmeta["image_assets"] = primary_meta.get("image_assets") or []
+        bmeta["image_bundle_meta"] = primary_meta.get("image_bundle_meta") or {}
+        bundles[0]["metadata"] = bmeta
+    else:
+        bundles.append(_build_user_upload_bundle(upload, result["assignment_text"]))
+    result["_bundles"] = bundles
+    result["_user_upload_assets"] = upload_assets
+    return result
+
+
+def _build_user_upload_bundle(upload: dict[str, Any], assignment_text: str) -> dict[str, Any]:
+    """Synthetic document bundle for assignment-only image uploads."""
+    doc_id = str(uuid.uuid4())
+    metadata: dict[str, Any] = {
+        "source_format": "user_upload",
+        "doc_role": "assignment",
+        "layout": "assignment_only",
+        "image_assets": upload.get("image_assets") or [],
+        "image_bundle_meta": upload.get("image_bundle_meta") or {},
+        "assignment_from_images": upload.get("assignment_from_images"),
+        "document_assignment_text": assignment_text,
+        "image_ocr_merged": upload.get("image_ocr_merged") or "",
+        "image_read_summary": upload.get("image_read_summary"),
+        "image_sections": upload.get("image_sections") or [],
+    }
+    question = {
+        "id": 0,
+        "type": "lab_report",
+        "title": "题目图片组",
+        "full_text": assignment_text,
+        "metadata": {k: v for k, v in metadata.items() if k not in ("image_assets", "image_bundle_meta")},
+        "placeholder": "",
+        "image_assets": upload.get("image_assets") or [],
+        "image_bundle_meta": upload.get("image_bundle_meta") or {},
+        "assignment_from_images": upload.get("assignment_from_images"),
+        "assignment_text": assignment_text,
+    }
+    planner_input_text = build_planner_input_text(
+        assignment_text=assignment_text,
+        fill_body_text="",
+        layout="assignment_only",
+    )
+    return {
+        "document_id": doc_id,
+        "id": doc_id,
+        "role": "assignment",
+        "layout": "assignment_only",
+        "file_name": "题目图片组",
+        "file_path": "",
+        "report_text": assignment_text,
+        "planner_input_text": planner_input_text,
+        "full_text": assignment_text,
+        "assignment_text": assignment_text,
+        "fill_body_text": "",
+        "metadata": metadata,
+        "question": question,
+        "warnings": upload.get("warnings") or [],
+        "needs_uml": False,
+        "split_idx": None,
+        "split_at_heading": "",
+        "paragraph_count": 0,
+        "report_layout": "",
+        "table_map": [],
+        "assignment_from_images": upload.get("assignment_from_images"),
+        "image_reading_mode": upload.get("image_reading_mode") or "",
+        "image_read_summary": upload.get("image_read_summary"),
+        "image_sections": upload.get("image_sections") or [],
+        "created_at": __import__("time").time(),
+    }
+
+
+def parse_assignment_images_only(
+    assignment_images: list[dict[str, Any]],
+    *,
+    enable_image_ocr: bool = False,
+    ocr_lang: str = "chi_sim+eng",
+    ocr_max_pages: int = 20,
+    image_reading_mode: str = "ocr_only",
+    vision_max_pages: int = 5,
+    llm_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Parse Step1 assignment image group without file documents (IM4 / I4)."""
+    from document.user_upload_images import process_user_upload_images
+
+    upload = process_user_upload_images(
+        assignment_images,
+        enable_image_ocr=enable_image_ocr,
+        ocr_lang=ocr_lang,
+        ocr_max_pages=ocr_max_pages,
+        body_text="",
+        image_reading_mode=image_reading_mode,
+        vision_max_pages=vision_max_pages,
+        llm_settings=llm_settings,
+    )
+    if not upload.get("image_assets"):
+        raise ValueError("题目图片组为空或无效")
+
+    assignment_text = upload.get("assignment_text") or ""
+    bundle = _build_user_upload_bundle(upload, assignment_text)
+    return {
+        "documents": [
+            {
+                "id": bundle["document_id"],
+                "role": "assignment",
+                "layout": "assignment_only",
+                "file_name": bundle["file_name"],
+                "format": "user_upload",
+                "metadata": bundle["metadata"],
+                "assignment_excerpt_len": len(assignment_text),
+                "fill_body_len": 0,
+                "split_at_heading": "",
+            }
+        ],
+        "document_ids": [bundle["document_id"]],
+        "fill_target": None,
+        "fill_target_info": None,
+        "assignment_text": assignment_text,
+        "planner_input_text": bundle["planner_input_text"],
+        "report_text": assignment_text,
+        "metadata": bundle["metadata"],
+        "question": bundle["question"],
+        "warnings": upload.get("warnings") or [],
+        "needs_uml": False,
+        "split_idx": None,
+        "layout": "assignment_only",
+        "format_spec": None,
+        "format_spec_source_id": None,
+        "assignment_from_images": bool(upload.get("assignment_from_images")),
+        "image_reading_mode": upload.get("image_reading_mode") or "",
+        "image_read_summary": upload.get("image_read_summary"),
+        "image_sections": upload.get("image_sections") or [],
+        "_bundles": [bundle],
+        "_user_upload_assets": upload.get("image_assets") or [],
+    }
+
+
 def parse_single_file(
     file_bytes: bytes,
     file_name: str,
@@ -244,12 +507,27 @@ def parse_single_file(
     layout_override: Optional[str] = None,
     split_at_heading: Optional[str] = None,
     needs_uml: bool = False,
+    enable_image_ocr: bool = False,
+    ocr_lang: str = "chi_sim+eng",
+    ocr_max_pages: int = 20,
+    image_reading_mode: str = "ocr_only",
+    vision_max_pages: int = 5,
+    llm_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     doc_id = doc_id or str(uuid.uuid4())
     tmp = TEMP_DIR / f"doc_{doc_id[:8]}_{file_name}"
     tmp.write_bytes(file_bytes)
 
-    question, metadata, full_text, warnings = build_question_from_document(tmp, file_name)
+    question, metadata, full_text, warnings = build_question_from_document(
+        tmp,
+        file_name,
+        enable_image_ocr=enable_image_ocr,
+        ocr_lang=ocr_lang,
+        ocr_max_pages=ocr_max_pages,
+        image_reading_mode=image_reading_mode,
+        vision_max_pages=vision_max_pages,
+        llm_settings=llm_settings,
+    )
     paragraphs = extract_document_paragraphs(tmp, file_name)
     src_fmt = document_format(file_name)
     resolved_role = role if role in VALID_ROLES and role != "auto" else guess_doc_role(full_text)
@@ -279,6 +557,8 @@ def parse_single_file(
         assignment_text = full_text
         fill_body_text = ""
         layout = "assignment_only"
+
+    assignment_text = _apply_ocr_to_assignment_text(assignment_text, metadata or {})
 
     report_text = fill_body_text or full_text
     metadata = dict(metadata or {})
@@ -320,6 +600,7 @@ def parse_single_file(
         layout=layout,
     )
 
+    image_read_summary = metadata.get("image_read_summary")
     return {
         "document_id": doc_id,
         "id": doc_id,
@@ -341,6 +622,10 @@ def parse_single_file(
         "paragraph_count": len(paragraphs),
         "report_layout": report_layout,
         "table_map": metadata.get("table_map") or [],
+        "assignment_from_images": bool(metadata.get("assignment_from_images")),
+        "image_reading_mode": metadata.get("image_reading_mode") or "",
+        "image_read_summary": image_read_summary,
+        "image_sections": metadata.get("image_sections") or [],
         "created_at": __import__("time").time(),
     }
 
@@ -349,6 +634,13 @@ def parse_documents_list(
     documents: list[dict],
     *,
     default_needs_uml: bool = False,
+    enable_image_ocr: bool = False,
+    ocr_lang: str = "chi_sim+eng",
+    ocr_max_pages: int = 20,
+    image_reading_mode: str = "ocr_only",
+    vision_max_pages: int = 5,
+    llm_settings: dict[str, Any] | None = None,
+    assignment_images: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """
     Parse documents[] payload; enforce one fill_target.
@@ -390,6 +682,30 @@ def parse_documents_list(
                 layout_override=item.get("layout"),
                 split_at_heading=item.get("split_at_heading"),
                 needs_uml=bool(item.get("needs_uml") or default_needs_uml),
+                enable_image_ocr=bool(
+                    item.get("enableImageOcr")
+                    or item.get("enable_image_ocr")
+                    or enable_image_ocr
+                ),
+                ocr_lang=str(
+                    item.get("imageOcrLang") or item.get("ocr_lang") or ocr_lang
+                ),
+                ocr_max_pages=int(
+                    item.get("imageOcrMaxPages")
+                    or item.get("ocr_max_pages")
+                    or ocr_max_pages
+                ),
+                image_reading_mode=str(
+                    item.get("imageReadingMode")
+                    or item.get("image_reading_mode")
+                    or image_reading_mode
+                ),
+                vision_max_pages=int(
+                    item.get("imageVisionMaxPages")
+                    or item.get("vision_max_pages")
+                    or vision_max_pages
+                ),
+                llm_settings=llm_settings,
             )
         else:
             raise ValueError(f"文档 {file_name} 缺少 file_data 或 text_content")
@@ -470,7 +786,7 @@ def parse_documents_list(
         if fill_target_info.get("message"):
             fill_target_payload["export_message"] = fill_target_info["message"]
 
-        return {
+        result = {
             "documents": [
                 {
                     "id": d["document_id"],
@@ -501,8 +817,24 @@ def parse_documents_list(
             "format_spec_source_id": (
                 format_spec_source["document_id"] if format_spec_source else None
             ),
+            "assignment_from_images": any(
+                d.get("assignment_from_images") for d in parsed_docs
+            ),
+            "image_reading_mode": primary.get("image_reading_mode") or "",
+            "image_read_summary": primary.get("image_read_summary"),
+            "image_sections": primary.get("image_sections") or [],
             "_bundles": parsed_docs,
         }
+        return _apply_user_upload_assignment_images(
+            result,
+            assignment_images or [],
+            enable_image_ocr=enable_image_ocr,
+            ocr_lang=ocr_lang,
+            ocr_max_pages=ocr_max_pages,
+            image_reading_mode=image_reading_mode,
+            vision_max_pages=vision_max_pages,
+            llm_settings=llm_settings,
+        )
 
     # No fill_target — assignment-only documents, answers go to new doc or UI only
     if len(parsed_docs) == 0:
@@ -521,7 +853,7 @@ def parse_documents_list(
         "parse_documents",
         f"docs={len(parsed_docs)} no fill_target, assignment_only",
     )
-    return {
+    result = {
         "documents": [
             {
                 "id": d["document_id"],
@@ -552,5 +884,21 @@ def parse_documents_list(
         "format_spec_source_id": (
             format_spec_source["document_id"] if format_spec_source else None
         ),
+        "assignment_from_images": any(
+            d.get("assignment_from_images") for d in parsed_docs
+        ),
+        "image_reading_mode": primary.get("image_reading_mode") or "",
+        "image_read_summary": primary.get("image_read_summary"),
+        "image_sections": primary.get("image_sections") or [],
         "_bundles": parsed_docs,
     }
+    return _apply_user_upload_assignment_images(
+        result,
+        assignment_images or [],
+        enable_image_ocr=enable_image_ocr,
+        ocr_lang=ocr_lang,
+        ocr_max_pages=ocr_max_pages,
+        image_reading_mode=image_reading_mode,
+        vision_max_pages=vision_max_pages,
+        llm_settings=llm_settings,
+    )

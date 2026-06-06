@@ -268,17 +268,6 @@ def verify_answer(
                 }
             )
 
-    if "screenshot_ide" in step_modules or "screenshot_terminal" in step_modules:
-        shot = mr.get("screenshot_ide") or mr.get("screenshot_terminal") or {}
-        imgs = (shot.get("data") or {}).get("images_b64") or []
-        checks.append(
-            {
-                "id": "images_ready",
-                "ok": bool(imgs),
-                "message": "截图已生成" if imgs else "计划含截图但未生成图片",
-            }
-        )
-
     diagrams = extract_diagrams(parsed)
     code_text = solve.get("code") or parsed.get("code") or ""
     language = solve.get("language") or parsed.get("language") or "java"
@@ -382,7 +371,7 @@ def verify_answer(
 
     from agent.executor_dirty import modules_to_rerun_from_verify
 
-    rerun_modules = modules_to_rerun_from_verify(suggested)
+    rerun_modules = modules_to_rerun_from_verify(suggested, ctx)
 
     return {
         "passed": passed,

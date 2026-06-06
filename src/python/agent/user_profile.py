@@ -7,6 +7,7 @@ Behavior stats are local-only, gated by ``optimize_plan_from_usage`` (default of
 from __future__ import annotations
 
 import json
+from collections import Counter
 from copy import deepcopy
 from typing import Any, Optional
 
@@ -28,7 +29,6 @@ DEFAULT_BEHAVIOR: dict[str, Any] = {
 DEFAULT_PROFILE: dict[str, Any] = {
     "schema_version": PROFILE_SCHEMA_VERSION,
     "default_language": "java",
-    "screenshot_style": "ide",
     "prefer_uml": False,
     "optimize_plan_from_usage": False,
     "behavior": deepcopy(DEFAULT_BEHAVIOR),
@@ -37,7 +37,6 @@ DEFAULT_PROFILE: dict[str, Any] = {
 V1_KEYS = frozenset(
     {
         "default_language",
-        "screenshot_style",
         "prefer_uml",
         "major",
         "experiment_bias",
@@ -93,7 +92,6 @@ def to_prompt_block(profile: dict) -> str:
     p = normalize_profile(profile)
     lines = [
         f"- 默认编程语言: {p.get('default_language', 'java')}",
-        f"- 默认截图风格: {p.get('screenshot_style', 'ide')}（ide 或 terminal）",
         f"- 倾向 UML: {'是' if p.get('prefer_uml') else '否'}",
     ]
     if p.get("major"):
@@ -209,22 +207,62 @@ def apply_plan_feedback_to_profile(profile: dict, diff: dict) -> dict[str, Any]:
     return p
 
 
+_FAILURE_HINT = "（历史上此步骤曾失败，请谨慎勾选）"
+_CANCEL_HINT = "（根据历史习惯默认不勾选）"
+
+_MODULE_FAILURE_LABELS = {
+    "run_code": "run_code 常失败",
+    "render_uml": "render_uml 常失败",
+    "fill_report": "fill_report 常失败",
+    "solve_lab": "solve_lab 常失败",
+}
+
+
+def _failure_module_counts(behavior: dict) -> Counter[str]:
+    items = behavior.get("failure_modules") or []
+    if not isinstance(items, list):
+        return Counter()
+    return Counter(str(x) for x in items if x)
+
+
+def behavior_hints_block(profile: dict) -> str:
+    """Weak C2 hints for planner prompt (failure_modules, no new steps)."""
+    p = normalize_profile(profile)
+    if not p.get("optimize_plan_from_usage"):
+        return ""
+    behavior = p.get("behavior") or {}
+    failures = _failure_module_counts(behavior)
+    lines: list[str] = []
+    for mod, count in failures.most_common(6):
+        if count < BEHAVIOR_MIN_SAMPLES:
+            continue
+        label = _MODULE_FAILURE_LABELS.get(mod, f"{mod} 曾失败")
+        lines.append(f"- 上次运行中 {label}（近 {count} 次记录），计划时谨慎插入该步")
+    if not lines:
+        return ""
+    return "【历史行为弱提示】（勿单独新增无报告依据的步骤）\n" + "\n".join(lines) + "\n"
+
+
 def apply_behavior_to_steps(steps: list[dict], profile: dict) -> list[dict]:
     """Weak planner hint: default-uncheck modules cancelled often in the past."""
     p = normalize_profile(profile)
     if not p.get("optimize_plan_from_usage"):
         return steps
-    counts = (p.get("behavior") or {}).get("module_cancel_count") or {}
-    hint = "（根据历史习惯默认不勾选）"
+    behavior = p.get("behavior") or {}
+    counts = behavior.get("module_cancel_count") or {}
+    failures = _failure_module_counts(behavior)
     out: list[dict] = []
     for step in steps:
         s = dict(step)
         mod = s.get("module") or ""
+        reason = (s.get("reason") or "").strip()
         if int(counts.get(mod) or 0) >= BEHAVIOR_MIN_SAMPLES and s.get("default_checked", True):
             s["default_checked"] = False
-            reason = (s.get("reason") or "").strip()
-            if hint not in reason:
-                s["reason"] = f"{reason}{hint}".strip() if reason else hint.strip("（）")
+            if _CANCEL_HINT not in reason:
+                s["reason"] = f"{reason}{_CANCEL_HINT}".strip() if reason else _CANCEL_HINT.strip("（）")
+        elif failures.get(mod, 0) >= BEHAVIOR_MIN_SAMPLES:
+            if _FAILURE_HINT not in reason:
+                s["reason"] = f"{reason}{_FAILURE_HINT}".strip() if reason else _FAILURE_HINT.strip("（）")
         out.append(s)
     return out
 

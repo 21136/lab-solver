@@ -1,7 +1,7 @@
 """
 Agent core types (Phase 1.3 — fields frozen for Phase 2a extension).
 
-See docs/LAB_SOLVER_AGENT_PLAN.md appendix C.
+See docs/architecture/LAB_SOLVER_AGENT_PLAN.md appendix C.
 """
 
 from typing import Any, NotRequired, TypedDict
@@ -12,6 +12,13 @@ AGENT_SCHEMA_VERSION = 1
 from agent.registry import known_module_ids
 
 KNOWN_MODULE_IDS = known_module_ids()
+
+# V5-4: experimental fill must not block deliverable / answer workspace.
+NON_BLOCKING_MODULES = frozenset({"fill_report"})
+
+
+def is_non_blocking_module(module: str) -> bool:
+    return module in NON_BLOCKING_MODULES
 
 
 class ChatResult(TypedDict, total=False):

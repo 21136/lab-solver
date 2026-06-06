@@ -130,6 +130,12 @@ def _execution_from_session(session: dict, constraints: list[str]) -> dict[str, 
         note = "本机无对应语言运行时，已跳过内化验证"
     elif reason == "skip_validation":
         note = "已跳过内化验证"
+    elif reason == "missing_jar":
+        missing = run_result.get("missing_jars") or []
+        labels = ", ".join(j.get("label") or j.get("id", "") for j in missing if isinstance(j, dict))
+        note = f"验证需要白名单 jar（{labels}），等待你确认下载后重试" if labels else "验证需要白名单 jar，等待你确认下载"
+    elif reason == "jar_download_declined":
+        note = "未同意下载验证所需 jar，已跳过内化验证"
     else:
         note = "未执行内化验证（无代码或环境不可用）"
     return {

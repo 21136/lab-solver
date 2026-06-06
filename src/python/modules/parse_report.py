@@ -126,6 +126,38 @@ def collect_parse_warnings(full_text: str, metadata: dict, file_name: str) -> li
     return warnings
 
 
+_OCR_ACTION_WARN_CODES = frozenset({
+    "short_body_with_images",
+    "short_text_with_images",
+    "ocr_suggested",
+    "possible_missing_figures",
+    "multiple_assignment_images",
+})
+
+
+def augment_ocr_action_warnings(
+    warnings: list,
+    *,
+    enable_image_ocr: bool,
+    metadata: dict,
+) -> None:
+    """Add UI action hints for parse warnings that OCR can resolve (IM2-b)."""
+    if enable_image_ocr:
+        return
+    image_assets = metadata.get("image_assets") or []
+    if not image_assets:
+        return
+    ocr_succeeded = bool(metadata.get("assignment_from_images"))
+    for w in warnings:
+        if not isinstance(w, dict):
+            continue
+        code = w.get("code")
+        if code in _OCR_ACTION_WARN_CODES:
+            w["action"] = "enable_ocr_reparse"
+        elif code == "pdf_scanned" and not ocr_succeeded:
+            w["action"] = "enable_ocr_reparse"
+
+
 _TRAINING_TABLE_MARKERS = (
     "实训步骤及内容", "实验步骤及内容",
     "实训步骤", "实训任务", "实训内容",
@@ -323,7 +355,33 @@ def extract_docx_paragraphs(path: Path) -> list[str]:
     return [p.text.strip() for p in doc.paragraphs if p.text.strip()]
 
 
-def build_question_from_document(path, file_name: str):
+def _merge_image_read_into_metadata(metadata: dict, image_read: dict) -> None:
+    """Persist IM2 OCR fields on parse metadata."""
+    if not image_read:
+        return
+    for key in (
+        "image_reading_mode",
+        "assignment_from_images",
+        "image_sections",
+        "image_ocr_merged",
+        "image_read_summary",
+        "document_assignment_text",
+    ):
+        if key in image_read:
+            metadata[key] = image_read[key]
+
+
+def build_question_from_document(
+    path,
+    file_name: str,
+    *,
+    enable_image_ocr: bool = False,
+    ocr_lang: str = "chi_sim+eng",
+    ocr_max_pages: int = 20,
+    image_reading_mode: str = "ocr_only",
+    vision_max_pages: int = 5,
+    llm_settings: dict | None = None,
+):
     """Parse docx/pdf and return question dict, metadata, full_text, warnings."""
     path = Path(path)
     if is_legacy_doc(file_name):
@@ -349,8 +407,28 @@ def build_question_from_document(path, file_name: str):
         file_name = converted.name
 
     full_text, metadata, hints = parse_document(path, file_name)
+    from document.image_read import apply_image_reading
+
+    ocr_warnings, image_read = apply_image_reading(
+        full_text,
+        metadata,
+        enable_image_ocr=enable_image_ocr,
+        ocr_lang=ocr_lang,
+        ocr_max_pages=ocr_max_pages,
+        hints=hints,
+        image_reading_mode=image_reading_mode,
+        vision_max_pages=vision_max_pages,
+        llm_settings=llm_settings,
+    )
+    _merge_image_read_into_metadata(metadata, image_read)
     warnings = collect_parse_warnings(full_text, metadata, file_name)
     warnings.extend(_pdf_hints_to_warnings(hints))
+    warnings.extend(ocr_warnings)
+    augment_ocr_action_warnings(
+        warnings,
+        enable_image_ocr=enable_image_ocr,
+        metadata=metadata,
+    )
     fmt = metadata.get("source_format") or document_format(file_name)
     title_base = file_name.rsplit(".", 1)[0] if "." in file_name else file_name
     image_assets = metadata.get("image_assets") or []
@@ -367,6 +445,11 @@ def build_question_from_document(path, file_name: str):
         "placeholder": "",
         "image_assets": image_assets,
         "image_bundle_meta": image_bundle_meta,
+        "assignment_from_images": bool(metadata.get("assignment_from_images")),
+        "image_reading_mode": metadata.get("image_reading_mode") or "",
+        "image_read_summary": metadata.get("image_read_summary"),
+        "image_sections": metadata.get("image_sections") or [],
+        "assignment_text": metadata.get("document_assignment_text") or full_text,
     }
     return question, question_metadata, full_text, warnings
 

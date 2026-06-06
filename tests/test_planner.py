@@ -12,10 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
 from agent.planner import (  # noqa: E402
+    adjust_plan_for_skip_validation,
+    adjust_plan_for_v4_pipeline,
+    adjust_plan_theory_only,
+    adjust_plan_v4_aware,
     compute_plan_fingerprint,
+    enrich_low_confidence_steps,
     normalize_plan,
     parse_plan_json,
     plan_from_report,
+    report_needs_code,
     _fallback_plan,
     _render_uml_reason_evidence,
 )
@@ -47,7 +53,7 @@ def test_parse_plan_json():
 
 
 def test_normalize_plan_filters_unknown():
-    profile = {"default_language": "java", "screenshot_style": "ide", "prefer_uml": False}
+    profile = {"default_language": "java", "prefer_uml": False}
     steps, clar = normalize_plan(
         {
             "steps": [
@@ -74,6 +80,84 @@ def test_render_plan_prompt():
     p = render_plan_prompt("实验报告正文", {"default_language": "java"})
     assert "实验报告正文" in p
     assert "solve_lab" in p
+
+
+def test_render_plan_prompt_v4_block():
+    p = render_plan_prompt(
+        "实验报告正文",
+        {"default_language": "java"},
+        v4_pipeline=True,
+        skip_validation=True,
+    )
+    assert "V4" in p
+    assert "skip_validation" in p
+
+
+def test_report_needs_code():
+    assert report_needs_code("请用 Java 实现 FIFO 页面置换")
+    assert not report_needs_code("简述操作系统进程与线程的区别")
+
+
+def test_adjust_plan_theory_only_drops_run_code():
+    steps = [
+        {"module": "solve_lab", "params": {}, "reason": "r", "default_checked": True},
+        {"module": "run_code", "params": {}, "reason": "r", "default_checked": True},
+        {"module": "render_uml", "params": {}, "reason": "r", "default_checked": False},
+    ]
+    out = adjust_plan_theory_only(steps, "一、实验目的\n二、思考题")
+    mods = [s["module"] for s in out]
+    assert "solve_lab" in mods
+    assert "run_code" not in mods
+    assert "render_uml" not in mods
+
+
+def test_adjust_plan_skip_validation():
+    steps = [
+        {"module": "solve_lab", "params": {}, "default_checked": True},
+        {"module": "run_code", "params": {}, "default_checked": True},
+    ]
+    out = adjust_plan_for_skip_validation(steps, ["skip_validation"])
+    assert [s["module"] for s in out] == ["solve_lab"]
+
+
+def test_adjust_plan_v4_demotes_run_code():
+    steps = [
+        {"module": "solve_lab", "params": {}, "default_checked": True},
+        {"module": "run_code", "params": {}, "reason": "复验", "default_checked": True},
+    ]
+    out = adjust_plan_for_v4_pipeline(steps, {"solvePipelineVersion": "v4"})
+    run = next(s for s in out if s["module"] == "run_code")
+    assert run["default_checked"] is False
+    assert "内化验证" in run["reason"]
+
+
+def test_enrich_low_confidence_steps():
+    steps = [
+        {
+            "module": "render_uml",
+            "params": {},
+            "confidence": "low",
+            "reason": "报告提及类图",
+            "default_checked": True,
+        }
+    ]
+    out = enrich_low_confidence_steps(steps)
+    assert out[0]["default_checked"] is False
+    assert "置信度较低" in out[0]["reason"]
+
+
+def test_adjust_plan_v4_aware_combined():
+    steps = [
+        {"module": "solve_lab", "params": {}, "default_checked": True},
+        {"module": "run_code", "params": {}, "default_checked": True},
+    ]
+    out = adjust_plan_v4_aware(
+        steps,
+        {"solvePipelineVersion": "v4"},
+        "纯理论思考题",
+        ["skip_validation"],
+    )
+    assert [s["module"] for s in out] == ["solve_lab"]
 
 
 def test_plan_from_report_requires_key():
@@ -124,6 +208,13 @@ def main():
     test_fallback_plan_lab()
     test_fallback_plan_uml_reason_lists_kinds()
     test_render_uml_reason_evidence_default_independent()
+    test_render_plan_prompt_v4_block()
+    test_report_needs_code()
+    test_adjust_plan_theory_only_drops_run_code()
+    test_adjust_plan_skip_validation()
+    test_adjust_plan_v4_demotes_run_code()
+    test_enrich_low_confidence_steps()
+    test_adjust_plan_v4_aware_combined()
     print("test_planner: OK")
 
 

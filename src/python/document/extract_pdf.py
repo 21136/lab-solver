@@ -1,9 +1,11 @@
 """
-PDF text extraction via PyMuPDF (Phase 2b B5).
+PDF text extraction via PyMuPDF (Phase 2b B5, IM3 page render).
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from typing import Any
 from config import PDF_OK
 
 _MIN_SCANNED_CHARS = 80
+_RENDER_ZOOM = 2.0
+_MIN_ASSIGNMENT_W_PX = 300
 _METADATA_PATTERNS = (
     ("course", re.compile(r"课程名称\s*[:：]?\s*(.+)", re.MULTILINE)),
     (
@@ -57,6 +61,43 @@ def _maybe_multicolumn_warn(page, blocks: list[tuple[float, float, str]]) -> boo
     left = sum(1 for _, x, _ in blocks if x < width * 0.38)
     right = sum(1 for _, x, _ in blocks if x > width * 0.58)
     return left >= 3 and right >= 3
+
+
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def render_pdf_pages(doc, *, max_pages: int = 0) -> list[dict[str, Any]]:
+    """Render each PDF page to a PNG image asset (IM3 scanned-PDF path)."""
+    import fitz
+
+    assets: list[dict[str, Any]] = []
+    mat = fitz.Matrix(_RENDER_ZOOM, _RENDER_ZOOM)
+    limit = doc.page_count if not max_pages else min(doc.page_count, max_pages)
+
+    for page_idx in range(limit):
+        page = doc[page_idx]
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        png_bytes = pix.tobytes("png")
+        w_px, h_px = pix.width, pix.height
+        role_guess = "assignment" if w_px >= _MIN_ASSIGNMENT_W_PX else "unknown"
+
+        assets.append({
+            "id": f"img_{len(assets) + 1:03d}",
+            "source": "pdf_page_render",
+            "order": len(assets),
+            "page_hint": page_idx + 1,
+            "mime": "image/png",
+            "bytes_b64": base64.b64encode(png_bytes).decode(),
+            "sha256": _sha256_hex(png_bytes),
+            "width_px": w_px,
+            "height_px": h_px,
+            "nearby_text": f"PDF 第 {page_idx + 1} 页",
+            "role_guess": role_guess,
+            "ocr_text": "",
+            "vision_summary": "",
+        })
+    return assets
 
 
 def extract_pdf(path: Path | str) -> tuple[str, dict[str, Any], list[dict[str, str]]]:
@@ -106,11 +147,23 @@ def extract_pdf(path: Path | str) -> tuple[str, dict[str, Any], list[dict[str, s
             cover = "\n".join(lines[:80])
             metadata.update(_metadata_from_cover_text(cover))
 
-        if len(full_text.strip()) < _MIN_SCANNED_CHARS:
+        if len(full_text.strip()) < _MIN_SCANNED_CHARS and page_count:
+            page_assets = render_pdf_pages(doc)
+            metadata["image_assets"] = page_assets
+            metadata["image_bundle_meta"] = {
+                "total": len(page_assets),
+                "deduped": len(page_assets),
+                "extraction_warnings": [],
+            }
+            n_pages = len(page_assets)
             hints.append(
                 {
                     "code": "pdf_scanned",
-                    "message": "疑似扫描版 PDF（几乎无文字层），请换 Word 或等待后续 OCR 支持",
+                    "message": (
+                        f"疑似扫描版 PDF（几乎无文字层），已按页提取 {n_pages} 张图片"
+                        "；将自动尝试 OCR 识别图中文字（需本机安装 Tesseract）"
+                        "，也可在设置中开启「识别图片中的文字」"
+                    ),
                 }
             )
         if multicolumn_pages >= 1:

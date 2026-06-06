@@ -8,17 +8,20 @@ import threading
 from typing import Any, Callable, Optional
 
 from agent.decision_log import append_decision
-from agent.quality import verify_answer
 from agent.reflect import run_reflect
 from agent.run_control import emit_event, is_cancelled, map_api_error, release_run
 from agent.types import ModuleResult
-from log_util import loge, logi
+from log_util import loge
 from modules.fix_code import apply_fix_to_solve_data, fix_code_from_error
 from modules.preflight import run_preflight
 from modules.revise_answer import revise_answer
+from modules.solve_pipeline import should_use_pipeline
 
 MAX_REFLECT_ROUNDS = 2
 MAX_FIX_CODE_ROUNDS = 2
+_TEXT_ONLY_FIELDS = frozenset(
+    {"steps_analysis", "result_description", "expected_output", "summary", "notes"}
+)
 
 
 def _emit_thought(emit: Optional[Callable], phase: str, text: str, extra: dict | None = None):
@@ -36,7 +39,18 @@ def _run_draft(ctx: dict, params: dict) -> ModuleResult:
     return _run_solve_lab(ctx, params)
 
 
-def _issues_to_scope(issues: list) -> list[str]:
+def _pipeline_code_status(solve_data: dict, ctx: dict) -> tuple[str, str]:
+    """Return (pipeline_version, code_status). v1 when legacy single-shot path."""
+    session = solve_data.get("solve_session") or ctx.get("solve_session") or {}
+    meta = solve_data.get("pipeline_meta") or ctx.get("pipeline_meta") or {}
+    version = (meta.get("version") or session.get("pipeline_version") or "").lower()
+    if not version:
+        version = "v4" if should_use_pipeline(ctx.get("settings")) else "v1"
+    status = (session.get("code_status") or meta.get("code_status") or "").lower()
+    return version, status
+
+
+def _issues_to_scope(issues: list, *, text_only: bool = False) -> list[str]:
     scope = []
     field_map = {
         "steps_analysis": "steps",
@@ -48,7 +62,98 @@ def _issues_to_scope(issues: list) -> list[str]:
     for item in issues:
         field = (item.get("field") or item.get("target") or "").strip()
         scope.append(field_map.get(field, field or "full"))
-    return list(dict.fromkeys(scope)) or ["full"]
+    scope = list(dict.fromkeys(scope))
+    if text_only:
+        scope = [s for s in scope if s != "code"]
+        if not scope or scope == ["full"]:
+            scope = ["steps", "result", "summary"]
+    return scope or (["steps", "result", "summary"] if text_only else ["full"])
+
+
+def _apply_revise_to_solve_data(
+    solve_data: dict,
+    parsed: dict,
+    rev: dict,
+    *,
+    text_only: bool,
+) -> dict:
+    """Merge revise output; V4 paths must not overwrite verified code."""
+    solve_data = dict(solve_data)
+    parsed = dict(parsed)
+    solve_data["parsed"] = parsed
+    if text_only:
+        for field in _TEXT_ONLY_FIELDS:
+            if field in parsed:
+                solve_data["parsed"][field] = parsed[field]
+        return solve_data
+    solve_data["code"] = parsed.get("code") or solve_data.get("code")
+    if parsed.get("code_files"):
+        solve_data["code_files"] = parsed["code_files"]
+    if parsed.get("main_file"):
+        solve_data["main_file"] = parsed["main_file"]
+    return solve_data
+
+
+def _run_preflight_fix_loop(
+    ctx: dict,
+    solve_data: dict,
+    *,
+    include_uml: bool,
+    emit: Callable,
+    run_id: str,
+) -> dict:
+    """v1 legacy preflight → fix_code loop; skipped when V4 already validated in solve_lab."""
+    version, code_status = _pipeline_code_status(solve_data, ctx)
+    if version == "v4":
+        append_decision(
+            ctx,
+            agent="deep_pipeline",
+            decision="skip_preflight_fix",
+            target="solve_lab",
+            reason=f"v4 code_status={code_status or 'pending'}",
+            emit=lambda e: emit({"type": "decision", **e}),
+        )
+        return solve_data
+
+    fix_round = 0
+    while fix_round <= MAX_FIX_CODE_ROUNDS:
+        if is_cancelled(run_id):
+            return solve_data
+
+        pf = run_preflight(solve_data, include_uml=include_uml)
+        exec_check = next((c for c in pf.get("checks", []) if c.get("id") == "exec_pattern"), {})
+        emit({
+            "type": "preflight",
+            "ok": pf["ok"],
+            "checks": pf.get("checks", []),
+            "exec_pattern": exec_check.get("pattern"),
+            "exec_ok": exec_check.get("ok"),
+            "exec_message": exec_check.get("message"),
+        })
+        if pf["ok"]:
+            break
+        code_failed = "code_syntax" in pf.get("failed_ids", [])
+        if not code_failed or fix_round >= MAX_FIX_CODE_ROUNDS:
+            break
+        fix_round += 1
+        err_msg = "; ".join(
+            c.get("message", "") for c in pf.get("checks", []) if not c.get("ok")
+        )
+        try:
+            fix = fix_code_from_error(
+                ctx["settings"],
+                code=solve_data.get("code") or "",
+                code_files=solve_data.get("code_files") or None,
+                main_file=solve_data.get("main_file") or "",
+                language=solve_data.get("language") or "java",
+                error_output=err_msg,
+                report_excerpt=ctx.get("planner_input_text") or ctx.get("report_text") or "",
+            )
+            solve_data = apply_fix_to_solve_data(solve_data, fix)
+            ctx["module_results"]["solve_lab"]["data"] = solve_data
+        except Exception:
+            break
+    return solve_data
 
 
 def execute_deep_run(
@@ -62,9 +167,7 @@ def execute_deep_run(
     Deep pipeline with verify before final done event.
     Reimplements tail by inlining execute after pre-reflect phases.
     """
-    from agent.document_store import clear_run_temp
-    from agent.executor import run_module
-    from agent.planner import MAX_CONSECUTIVE_FAILURES, replan_incremental
+    from agent.planner import MAX_CONSECUTIVE_FAILURES
 
     emit = lambda ev: emit_event(run_id, ev)
     ctx["run_id"] = run_id
@@ -101,48 +204,18 @@ def execute_deep_run(
             emit({"type": "progress", "module": "solve_lab", "phase": "draft", "status": "done"})
             solve_data = draft_result.get("data") or {}
             include_uml = bool((solve_step.get("params") or {}).get("include_uml"))
+            pipeline_version, _code_status = _pipeline_code_status(solve_data, ctx)
+            text_only_revise = pipeline_version == "v4"
 
-            fix_round = 0
-            while fix_round <= MAX_FIX_CODE_ROUNDS:
-                if is_cancelled(run_id):
-                    release_run(run_id, "cancelled")
-                    emit({"type": "done", "ok": False, "cancelled": True})
-                    return {"cancelled": True}
-
-                pf = run_preflight(solve_data, include_uml=include_uml)
-                # Pick out the exec pattern check for frontend warning dialogs
-                exec_check = next((c for c in pf.get("checks", []) if c.get("id") == "exec_pattern"), {})
-                emit({
-                    "type": "preflight",
-                    "ok": pf["ok"],
-                    "checks": pf.get("checks", []),
-                    "exec_pattern": exec_check.get("pattern"),
-                    "exec_ok": exec_check.get("ok"),
-                    "exec_message": exec_check.get("message"),
-                })
-                if pf["ok"]:
-                    break
-                code_failed = "code_syntax" in pf.get("failed_ids", [])
-                if not code_failed or fix_round >= MAX_FIX_CODE_ROUNDS:
-                    break
-                fix_round += 1
-                err_msg = "; ".join(
-                    c.get("message", "") for c in pf.get("checks", []) if not c.get("ok")
-                )
-                try:
-                    fix = fix_code_from_error(
-                        ctx["settings"],
-                        code=solve_data.get("code") or "",
-                        code_files=solve_data.get("code_files") or None,
-                        main_file=solve_data.get("main_file") or "",
-                        language=solve_data.get("language") or "java",
-                        error_output=err_msg,
-                        report_excerpt=ctx.get("planner_input_text") or ctx.get("report_text") or "",
-                    )
-                    solve_data = apply_fix_to_solve_data(solve_data, fix)
-                    ctx["module_results"]["solve_lab"]["data"] = solve_data
-                except Exception:
-                    break
+            solve_data = _run_preflight_fix_loop(
+                ctx,
+                solve_data,
+                include_uml=include_uml,
+                emit=emit,
+                run_id=run_id,
+            )
+            if is_cancelled(run_id):
+                return {"cancelled": True}
 
             parsed = solve_data.get("parsed") or {}
             while reflect_round < MAX_REFLECT_ROUNDS:
@@ -176,16 +249,16 @@ def execute_deep_run(
                         ctx["settings"],
                         parsed=parsed,
                         report_excerpt=ctx.get("planner_input_text") or ctx.get("report_text") or "",
-                        scope=_issues_to_scope(issues),
+                        scope=_issues_to_scope(issues, text_only=text_only_revise),
                         feedback="; ".join(i.get("message", "") for i in issues[:5]),
                     )
                     parsed = rev.get("parsed") or parsed
-                    solve_data["parsed"] = parsed
-                    solve_data["code"] = parsed.get("code") or solve_data.get("code")
-                    if parsed.get("code_files"):
-                        solve_data["code_files"] = parsed["code_files"]
-                    if parsed.get("main_file"):
-                        solve_data["main_file"] = parsed["main_file"]
+                    solve_data = _apply_revise_to_solve_data(
+                        solve_data,
+                        parsed,
+                        rev,
+                        text_only=text_only_revise,
+                    )
                     ctx["module_results"]["solve_lab"]["data"] = solve_data
                     if not rev.get("changed_fields"):
                         break
@@ -201,138 +274,37 @@ def execute_deep_run(
                 }
             )
 
-    # Execute tail modules (shared with standard via RunOrchestrator when enabled)
-    from agent.orchestrator import RunOrchestrator, RunStepsOptions, orchestrator_enabled
+    from agent.orchestrator import RunOrchestrator, RunStepsOptions
+    from agent.run_result import complete_agent_run
 
-    orch: RunOrchestrator | None = None
-    if orchestrator_enabled(ctx):
-        orch = RunOrchestrator(run_id, ctx, emit=emit, on_decision=on_decision)
-        tail_opts = RunStepsOptions(
-            exclude_modules=frozenset({"solve_lab", "fix_code"}),
-            emit_skipped=False,
-            enable_reuse=False,
-            enable_retry_filter=False,
-            emit_plan_updated=False,
-            replan_restart_index=False,
-            note_completion=False,
-            set_last_error_on_fail=False,
-            run_code_error_meta=False,
-            log_step_decisions=False,
-            initial_completed=list(completed_modules),
-        )
-        completed_modules, cancelled = orch.run_steps(steps, options=tail_opts)
-        if cancelled:
-            release_run(run_id, "cancelled")
-            emit({"type": "done", "ok": False, "cancelled": True})
-            return {"cancelled": True}
-    else:
-        i = 0
-        exec_steps = [s for s in steps if s.get("module") != "solve_lab"]
-        while i < len(exec_steps):
-            if is_cancelled(run_id):
-                release_run(run_id, "cancelled")
-                emit({"type": "done", "ok": False, "cancelled": True})
-                return {"cancelled": True}
-
-            step = exec_steps[i]
-            module = step.get("module") or ""
-            if not step.get("default_checked", True):
-                i += 1
-                continue
-            if module in completed_modules:
-                i += 1
-                continue
-            if module == "fix_code":
-                i += 1
-                continue
-
-            emit({"type": "progress", "module": module, "index": i, "status": "running"})
-            try:
-                result = run_module(ctx, step)
-            except Exception as e:
-                mapped = map_api_error(e)
-                from agent.executor import _fail_result
-
-                result = _fail_result(module, mapped["error"], step.get("params"))
-            ctx.setdefault("module_results", {})[module] = result
-            if result.get("ok"):
-                completed_modules.append(module)
-                ctx["consecutive_failures"] = 0
-                emit({"type": "progress", "module": module, "index": i, "status": "done"})
-            else:
-                ctx["consecutive_failures"] = int(ctx.get("consecutive_failures") or 0) + 1
-                emit(
-                    {
-                        "type": "progress",
-                        "module": module,
-                        "index": i,
-                        "status": "failed",
-                        "error": (result.get("data") or {}).get("error"),
-                    }
-                )
-                if ctx["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
-                    new_plan = replan_incremental(
-                        ctx,
-                        {
-                            "failed_module": module,
-                            "error_summary": (result.get("data") or {}).get("error", ""),
-                            "completed_modules": completed_modules,
-                        },
-                        emit=on_decision,
-                    )
-                    exec_steps = [
-                        s
-                        for s in (new_plan.get("steps") or exec_steps)
-                        if s.get("module") != "solve_lab"
-                    ]
-                    ctx["consecutive_failures"] = 0
-            i += 1
-
-    any_solve = (ctx.get("module_results") or {}).get("solve_lab", {}).get("ok")
-    if not any_solve and use_fallback:
-        try:
-            from agent.fallback import fallback_to_solve
-
-            fallback_to_solve(ctx, emit=on_decision)
-        except Exception:
-            pass
-
-    report = (
-        orch.run_verify(auto_remediate=bool(ctx.get("auto_remediate")))
-        if orch is not None
-        else verify_answer(ctx)
+    orch = RunOrchestrator(run_id, ctx, emit=emit, on_decision=on_decision)
+    tail_opts = RunStepsOptions(
+        exclude_modules=frozenset({"solve_lab", "fix_code"}),
+        emit_skipped=False,
+        enable_reuse=False,
+        enable_retry_filter=False,
+        emit_plan_updated=False,
+        replan_restart_index=False,
+        note_completion=False,
+        set_last_error_on_fail=False,
+        run_code_error_meta=False,
+        log_step_decisions=False,
+        initial_completed=list(completed_modules),
     )
-    if orch is None:
-        ctx["verification_report"] = report
-        emit({"type": "verification", **report})
+    _completed, cancelled = orch.run_steps(steps, options=tail_opts)
+    if cancelled:
+        release_run(run_id, "cancelled")
+        emit({"type": "done", "ok": False, "cancelled": True})
+        return {"cancelled": True}
 
-    fill_mr = (ctx.get("module_results") or {}).get("fill_report")
-    final = {
-        "run_id": run_id,
-        "ok": report.get("passed", True) and any(
-            (ctx.get("module_results") or {}).get(m, {}).get("ok")
-            for m in ("solve_lab", "solve_theory")
-        ),
-        "module_results": {
-            k: {"ok": v.get("ok"), "data": v.get("data")}
-            for k, v in (ctx.get("module_results") or {}).items()
-        },
-        "verification_report": report,
-        "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
-    }
-    if orch is None:
-        from agent.orchestrator import RunOrchestrator, finalize_run_payload
-
-        orch = RunOrchestrator(run_id, ctx, emit=emit, on_decision=on_decision)
-    else:
-        from agent.orchestrator import finalize_run_payload
-
-    final = finalize_run_payload(orch, final)
-    release_run(run_id, "completed")
-    clear_run_temp(run_id)
-    emit({"type": "done", **final})
-    logi("deep_pipeline", f"run_id={run_id} done ok={final.get('ok')}")
-    return final
+    return complete_agent_run(
+        run_id,
+        ctx,
+        orch,
+        emit=emit,
+        use_fallback=use_fallback,
+        agent_log_tag="deep_pipeline",
+    )
 
 
 def run_deep_pipeline(

@@ -77,24 +77,6 @@ def _build_registry() -> dict[str, ModuleSpec]:
             runner="executor",
         ),
         ModuleSpec(
-            id="screenshot_ide",
-            description="生成 IDE 风格代码截图",
-            planner_visible=True,
-            react_alias="screenshot",
-            react_description="生成 IDE 风格代码截图（含代码+终端输出），用于插入实验报告。无需参数。",
-            react_params=(),
-            runner="executor",
-        ),
-        ModuleSpec(
-            id="screenshot_terminal",
-            description="生成终端风格截图",
-            planner_visible=True,
-            react_alias=None,
-            react_description=None,
-            react_params=(),
-            runner="executor",
-        ),
-        ModuleSpec(
             id="render_uml",
             description="渲染 UML 图",
             planner_visible=True,
@@ -123,8 +105,11 @@ def _build_registry() -> dict[str, ModuleSpec]:
             id="present_deliverable",
             description="汇编答案交付物（分节内容、代码、图表）",
             planner_visible=True,
-            react_alias=None,
-            react_description=None,
+            react_alias="present_deliverable",
+            react_description=(
+                "汇编答案交付物（默认终点）。将 solve_lab 结果整理为分节内容、代码、图表，"
+                "供用户在答案工作区复制。须先完成 solve_lab。无需参数。"
+            ),
             react_params=(),
             runner="executor",
         ),
@@ -166,20 +151,20 @@ def _build_registry() -> dict[str, ModuleSpec]:
         ),
         ModuleSpec(
             id="revise_answer",
-            description="根据反馈修订答案",
+            description="根据反馈修订答案（verify auto_remediate 文字修订）",
             planner_visible=False,
             react_alias=None,
             react_description=None,
             react_params=(),
-            runner="",
+            runner="executor",
         ),
         ModuleSpec(
             id="finalize_report",
-            description="一键完成 UML → 截图 → 填表",
+            description="一键完成 UML → 交付",
             planner_visible=False,
             react_alias="finalize_report",
             react_description=(
-                "一键完成：渲染 UML（若有）→ 截图 → 填入 Word。"
+                "一键完成：渲染 UML（若有）→ present_deliverable 或 fill_report。"
                 "当 run_code 反复失败或接近轮次上限时优先调用，不要继续 fix_code。"
             ),
             react_params=(),

@@ -1,5 +1,5 @@
 """
-ReAct post-loop finalize: run plan steps the agent never reached (UML / screenshot / fill).
+ReAct post-loop finalize: run plan steps the agent never reached (UML / deliver / fill).
 
 Thin wrapper around RunOrchestrator.run_finalize (V3-2).
 """
@@ -25,26 +25,32 @@ def react_finalize_pipeline(
 
 
 def execute_finalize_report(ctx: dict, params: dict | None = None) -> dict[str, Any]:
-    """Single-shot tool: render_uml → screenshot → fill_report."""
-    steps = [{"module": "render_uml"}, {"module": "screenshot_ide"}, {"module": "fill_report"}]
+    """Single-shot tool: render_uml → present_deliverable or fill_report (non-blocking)."""
+    from modules.deliverable import is_content_only_output_mode
+
+    output_mode = ctx.get("output_mode", "deliverable")
+    if is_content_only_output_mode(output_mode):
+        steps = [
+            {"module": "render_uml"},
+            {"module": "present_deliverable"},
+        ]
+    else:
+        steps = [{"module": "render_uml"}, {"module": "fill_report"}]
     cycles = react_finalize_pipeline(ctx.get("run_id") or "tool", ctx, steps, max_rounds=0)
-    fill_ok = _module_done(ctx, "fill_report")
+    fill_ok = _module_done(ctx, "fill_report") or _module_done(ctx, "present_deliverable")
     uml_n = len(
         (((ctx.get("module_results") or {}).get("render_uml") or {}).get("data") or {}).get("images_b64") or []
     )
-    shot_n = 0
-    for mod in ("screenshot_ide", "screenshot_terminal"):
-        if _module_done(ctx, mod):
-            shot_n = len(((ctx.get("module_results") or {}).get(mod) or {}).get("data", {}).get("images_b64") or [])
-            break
-    summary = f"finalize_report: UML {uml_n} 张, 截图 {shot_n} 张, 填表={'成功' if fill_ok else '失败'}"
-    if not fill_ok:
+    tail_label = "汇编答案" if is_content_only_output_mode(output_mode) else "填表"
+    summary = f"finalize_report: UML {uml_n} 张, {tail_label}={'成功' if fill_ok else '未成功（不影响主流程）'}"
+    if not fill_ok and not is_content_only_output_mode(output_mode):
         fill_err = ((ctx.get("module_results") or {}).get("fill_report") or {}).get("data") or {}
         err = fill_err.get("error", "")
         if err:
             summary += f" — {err}"
-    out = {"ok": fill_ok, "result_summary": summary, "data": {"cycles": len(cycles)}, "module": "finalize_report"}
-    ctx.setdefault("module_results", {})["finalize_report"] = {"ok": fill_ok, "data": out["data"]}
+    solve_ok = _module_done(ctx, "solve_lab")
+    out = {"ok": solve_ok or fill_ok, "result_summary": summary, "data": {"cycles": len(cycles)}, "module": "finalize_report"}
+    ctx.setdefault("module_results", {})["finalize_report"] = {"ok": out["ok"], "data": out["data"]}
     return out
 
 

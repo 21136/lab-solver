@@ -71,8 +71,11 @@ def acquire_run(run_id: Optional[str] = None) -> str:
             "status": "running",
             "cancel_event": threading.Event(),
             "events": queue.Queue(),
+            "event_log": [],
             "retry_module": None,
             "last_error": None,
+            "jar_consent_event": None,
+            "jar_consent_result": None,
         }
         logi("run_control", f"acquired run_id={rid}")
         return rid
@@ -91,6 +94,18 @@ def release_run(run_id: str, status: str = "completed") -> None:
 
 def get_run(run_id: str) -> Optional[dict[str, Any]]:
     return _runs.get(run_id)
+
+
+def get_active_run_id() -> Optional[str]:
+    """Return run_id of the in-flight task, if any (RL10 refresh recovery)."""
+    with _lock:
+        rid = _active_run_id
+        if not rid:
+            return None
+        state = _runs.get(rid)
+        if state and state.get("status") == "running":
+            return rid
+        return None
 
 
 def is_cancelled(run_id: str) -> bool:
@@ -116,24 +131,93 @@ def emit_event(run_id: str, event: dict[str, Any]) -> None:
     if not state:
         return
     event.setdefault("run_id", run_id)
+    log = state.setdefault("event_log", [])
+    event["seq"] = len(log)
+    log.append(event)
     try:
         state["events"].put_nowait(event)
     except queue.Full:
         pass
 
 
-def iter_events(run_id: str, timeout: float = 30.0):
-    """SSE generator: yield events until done/cancelled/timeout heartbeat."""
+def get_run_events(run_id: str, since: int = 0) -> tuple[str, list[dict[str, Any]]]:
+    """Return (status, events[since:]) for SSE reconnect / polling (RL10)."""
+    state = _runs.get(run_id)
+    if not state:
+        return "missing", []
+    log = state.get("event_log") or []
+    start = max(0, int(since))
+    return str(state.get("status") or "unknown"), list(log[start:])
+
+
+def wait_for_jar_consent(
+    run_id: str,
+    missing_jars: list[dict[str, Any]],
+    *,
+    timeout: float = 300.0,
+) -> bool:
+    """Block solve_lab until UI responds to jar_consent_required (RL8)."""
+    state = _runs.get(run_id)
+    if not state:
+        return False
+    consent_ev = threading.Event()
+    state["jar_consent_event"] = consent_ev
+    state["jar_consent_result"] = None
+    emit_event(
+        run_id,
+        {"type": "jar_consent_required", "missing_jars": missing_jars},
+    )
+    timed_out = not consent_ev.wait(timeout=timeout)
+    approved = bool(state.get("jar_consent_result"))
+    state["jar_consent_event"] = None
+    state["jar_consent_result"] = None
+    if timed_out:
+        logi("run_control", f"jar consent timeout run_id={run_id}")
+        return False
+    return approved
+
+
+def respond_jar_consent(run_id: str, approved: bool, jar_ids: list[str] | None = None) -> bool:
+    state = _runs.get(run_id)
+    if not state:
+        return False
+    if approved and jar_ids:
+        state["approved_jar_ids"] = [str(i).strip() for i in jar_ids if str(i).strip()]
+    state["jar_consent_result"] = bool(approved)
+    consent_ev = state.get("jar_consent_event")
+    if consent_ev:
+        consent_ev.set()
+        return True
+    emit_event(run_id, {"type": "jar_consent_resolved", "approved": bool(approved)})
+    return True
+
+
+def iter_events(run_id: str, timeout: float = 30.0, since: int = 0):
+    """SSE generator: replay event_log[since:], then live queue (RL10)."""
     state = _runs.get(run_id)
     if not state:
         yield {"type": "error", "message": "run_id 不存在"}
         return
 
+    log = state.get("event_log") or []
+    start = max(0, int(since))
+    for ev in log[start:]:
+        yield ev
+        if ev.get("type") in ("done", "error", "cancelled"):
+            return
+
+    if state.get("status") != "running":
+        return
+
     q: queue.Queue = state["events"]
+    seen = len(log)
     while True:
         try:
             ev = q.get(timeout=timeout)
+            if int(ev.get("seq", -1)) < seen:
+                continue
             yield ev
+            seen = max(seen, int(ev.get("seq", seen)) + 1)
             if ev.get("type") in ("done", "error", "cancelled"):
                 break
         except queue.Empty:

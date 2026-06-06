@@ -80,6 +80,34 @@ def test_should_reuse_dirty_module():
     assert orch.should_reuse("run_code") is True
 
 
+def test_fill_report_failure_is_non_blocking():
+    ctx = {
+        "run_id": "orch_fill",
+        "module_results": {},
+        "consecutive_failures": 0,
+        "replan_rounds": 0,
+        "plan": {"steps": []},
+        "decision_log": [],
+    }
+    steps = [{"module": "fill_report", "params": {}, "default_checked": True}]
+    mocks = {
+        "fill_report": lambda c, p: {"ok": False, "data": {"error": "节未匹配"}},
+    }
+    events, emit = _collect_emit()
+    orch = RunOrchestrator("orch_fill", ctx, emit=emit)
+
+    with patch.dict("agent.executor._MODULE_RUNNERS", mocks, clear=False):
+        completed, cancelled = orch.run_steps(steps)
+
+    assert cancelled is False
+    assert completed == []
+    assert ctx["consecutive_failures"] == 0
+    progress = [e for e in events if e.get("type") == "progress" and e.get("module") == "fill_report"]
+    assert len(progress) == 2
+    assert progress[-1]["status"] == "degraded"
+    assert progress[-1].get("error_meta", {}).get("degraded") is True
+
+
 def test_run_steps_skips_unchecked():
     ctx = {
         "run_id": "orch2",

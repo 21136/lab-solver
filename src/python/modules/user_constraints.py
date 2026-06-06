@@ -43,6 +43,8 @@ def normalize_user_constraints(raw: Any) -> list[str]:
         key = item.lower().replace("-", "_")
         if key in KNOWN_CONSTRAINTS and key not in out:
             out.append(key)
+    if "no_external_jar" in out and "allow_curated_jars" in out:
+        out.remove("allow_curated_jars")
     return out
 
 
@@ -79,7 +81,16 @@ def build_constraints_prompt_block(constraints: list[str]) -> str:
         lines.append("- code_files 数组长度必须为 1。")
     if "skip_validation" in constraints:
         lines.append("- 用户不要求内化验证，但仍须生成完整可运行风格的代码。")
+    if "allow_curated_jars" in constraints:
+        lines.append(
+            "- 允许使用白名单 jar（H2、SQLite JDBC）进行内化验证；"
+            "仅可使用已安装或用户同意下载的库，禁止假设其他 Maven 依赖。"
+        )
     return "\n".join(lines) + "\n"
+
+
+def allows_curated_jars(constraints: list[str]) -> bool:
+    return "allow_curated_jars" in constraints and "no_external_jar" not in constraints
 
 
 _JDK_JAVA_PREFIXES = ("java.", "javax.")

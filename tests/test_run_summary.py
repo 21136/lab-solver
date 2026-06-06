@@ -16,6 +16,8 @@ def _not_cancelled():
 def test_build_run_summary_fields():
     ctx = {
         "run_mode": "standard",
+        "settings": {"solveQualityTier": "thorough"},
+        "pipeline_meta": {"version": "v4", "code_status": "verified"},
         "verification_report": {"passed": True},
         "skills_fired": ["java-no-servlet"],
         "finalize_ran": True,
@@ -31,6 +33,9 @@ def test_build_run_summary_fields():
         summary = orch.build_run_summary()
 
     assert summary["mode"] == "standard"
+    assert summary["solve_quality_tier"] == "thorough"
+    assert summary["pipeline_version"] == "v4"
+    assert summary["code_status"] == "verified"
     assert summary["llm_calls"] == 5
     assert summary["replan_count"] == 2
     assert summary["verify_pass"] is True

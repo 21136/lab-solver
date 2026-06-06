@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
+from agent.executor_dirty import modules_to_rerun_from_verify
 from agent.orchestrator import RunOrchestrator
 
 
@@ -80,6 +81,60 @@ def test_auto_remediate_revise_full_passes_after_rerun():
     decisions = [d for d in ctx["decision_log"] if d.get("decision") == "auto_remediate"]
     assert len(decisions) == 1
     assert "solve_lab" in decisions[0].get("target", "")
+
+
+def test_modules_to_rerun_verified_code_uses_revise_not_solve_lab():
+    ctx = {
+        "pipeline_meta": {"code_status": "verified"},
+        "module_results": {"solve_lab": {"ok": True, "data": {"pipeline_meta": {"code_status": "verified"}}}},
+    }
+    mods = modules_to_rerun_from_verify(["revise_full", "fix_code"], ctx)
+    assert "solve_lab" not in mods
+    assert "fix_code" not in mods
+    assert "revise_answer" in mods
+
+
+def test_auto_remediate_verified_uses_revise_answer():
+    ctx = {
+        "run_id": "rem3",
+        "module_results": {"solve_lab": _incomplete_solve()},
+        "pipeline_meta": {"code_status": "verified"},
+        "confirmed_steps": [{"module": "solve_lab", "params": {}, "default_checked": True}],
+        "consecutive_failures": 0,
+        "replan_rounds": 0,
+        "plan": {"steps": []},
+        "decision_log": [],
+        "auto_remediate": True,
+        "settings": {"api_key": "k", "provider": "deepseek", "model": "m"},
+    }
+    solve_mr = ctx["module_results"]["solve_lab"]
+    solve_mr["data"]["pipeline_meta"] = {"code_status": "verified"}
+    events: list[dict] = []
+    calls = {"solve": 0, "revise": 0}
+
+    def mock_solve(c, p):
+        calls["solve"] += 1
+        return _complete_solve()
+
+    def mock_revise(c, p):
+        calls["revise"] += 1
+        complete = _complete_solve()
+        c.setdefault("module_results", {})["solve_lab"] = complete
+        return {"ok": True, "data": {"changed_fields": ["summary"]}}
+
+    orch = RunOrchestrator("rem3", ctx, emit=events.append)
+    orch.completed_modules = ["solve_lab"]
+
+    with patch.dict(
+        "agent.executor._MODULE_RUNNERS",
+        {"solve_lab": mock_solve, "revise_answer": mock_revise},
+        clear=False,
+    ):
+        report = orch.run_verify(auto_remediate=True, max_rounds=1)
+
+    assert report.get("passed") is True
+    assert calls["solve"] == 0
+    assert calls["revise"] == 1
 
 
 def test_auto_remediate_off_no_rerun():

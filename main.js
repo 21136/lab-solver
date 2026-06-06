@@ -228,6 +228,16 @@ ipcMain.handle('open-docx-dialog', async () => {
   });
 });
 
+ipcMain.handle('open-image-dialog', async () => {
+  return dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: '图片 (.png / .jpg / .webp)', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tif', 'tiff'] },
+      { name: '所有文件', extensions: ['*'] },
+    ],
+  });
+});
+
 // IPC: 保存文件对话框
 ipcMain.handle('save-file-dialog', async (event, defaultName, filters) => {
   const result = await dialog.showSaveDialog(mainWindow, {

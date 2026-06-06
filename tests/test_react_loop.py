@@ -25,7 +25,7 @@ from agent.react_tools import (
 class TestBuildToolsPrompt:
     def test_includes_all_tools(self):
         text = build_tools_prompt()
-        for name in ("solve_lab", "run_code", "screenshot", "fill_report", "render_uml", "finalize_report"):
+        for name in ("solve_lab", "run_code", "fill_report", "render_uml", "finalize_report"):
             assert f"[TOOL: {name}]" in text
 
     def test_includes_descriptions(self):
@@ -38,7 +38,6 @@ class TestToolToModule:
     def test_known_actions(self):
         assert tool_to_module("solve_lab") == "solve_lab"
         assert tool_to_module("run_code") == "run_code"
-        assert tool_to_module("screenshot") == "screenshot_ide"
         assert tool_to_module("fill_report") == "fill_report"
         assert tool_to_module("render_uml") == "render_uml"
 
@@ -221,6 +220,51 @@ class TestRunReactLoop:
     @patch("agent.react_loop.emit_event")
     @patch("agent.react_loop.release_run")
     @patch("agent.react_loop.is_cancelled")
+    def test_bootstrap_solve_lab_before_llm(self, mock_cancel, mock_release, mock_emit, mock_chat):
+        """AO-7: solve_lab runs via V4 pipeline before first LLM round."""
+        mock_cancel.return_value = False
+        mock_chat.return_value = {
+            "content": '{"thought": "完成", "action": "done", "params": {}}',
+            "reasoning_content": "",
+            "finish_reason": "stop",
+        }
+        solve_calls: list[str] = []
+
+        def solve_runner(ctx, p):
+            solve_calls.append("solve_lab")
+            return {
+                "ok": True,
+                "data": {
+                    "code": "print(1)",
+                    "parsed": {"steps_analysis": "s", "result_description": "r"},
+                    "pipeline_meta": {"version": "v4", "code_status": "verified"},
+                },
+            }
+
+        with patch.dict(
+            "agent.executor._MODULE_RUNNERS",
+            {
+                "solve_lab": solve_runner,
+                "present_deliverable": lambda c, p: {
+                    "ok": True,
+                    "data": {"deliverable": {"sections": []}},
+                },
+            },
+            clear=False,
+        ):
+            with patch("agent.quality.verify_answer", return_value={"passed": True}):
+                result = run_react_loop("test-bootstrap", self._make_ctx(), [], use_fallback=False)
+
+        assert solve_calls == ["solve_lab"]
+        trace = result.get("thought_trace") or []
+        assert trace and trace[0].get("bootstrap") is True
+        assert trace[0].get("action") == "solve_lab"
+        mock_chat.assert_called()
+
+    @patch("agent.react_loop.chat_messages")
+    @patch("agent.react_loop.emit_event")
+    @patch("agent.react_loop.release_run")
+    @patch("agent.react_loop.is_cancelled")
     def test_cancel_mid_loop(self, mock_cancel, mock_release, mock_emit, mock_chat):
         """Cancellation should trigger clean exit."""
         mock_cancel.return_value = True
@@ -270,14 +314,6 @@ class TestExecuteToolIntegration:
             result = execute_tool({}, "run_code", {})
             assert result["ok"] is True
             assert "代码执行成功" in result["result_summary"]
-
-    def test_screenshot_calls_runner(self):
-        with patch("agent.executor._MODULE_RUNNERS", {
-            "screenshot_ide": lambda ctx, p: {"ok": True, "data": {"images_b64": ["aaa", "bbb"]}},
-        }):
-            result = execute_tool({}, "screenshot", {})
-            assert result["ok"] is True
-            assert "共 2 张" in result["result_summary"]
 
     def test_fill_report_calls_runner(self):
         with patch("agent.executor._MODULE_RUNNERS", {

@@ -1,6 +1,5 @@
 """
 解题能手 - Python后端服务 v2
-整份报告丢给AI + 多种截图策略
 """
 
 import argparse
@@ -15,7 +14,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, stream_with_context
 from flask_cors import CORS
 
-from config import APP_DATA, DOCX_OK, IDE_RENDER_OK, JRE_DIR, PIL_OK, TEMP_DIR, UML_RENDER_OK
+from config import APP_DATA, DOCX_OK, JRE_DIR, PIL_OK, TEMP_DIR, UML_RENDER_OK
 from config import detect_needs_uml
 from log_util import get_log_buffer, loge, logi
 from llm_client import call_ai
@@ -23,8 +22,16 @@ from modules.fill_report import do_fill
 from modules.fix_code import fix_code_from_error
 from modules.parse_report import build_question_from_document, detect_docx_sections, document_format
 from settings_schema import SETTINGS_SCHEMA_VERSION
-from modules.run_code import execute_code, get_java_exe, java_status_info, launch_async_gui
-from modules.screenshot import paths_to_b64, render_ide_screenshot_file, render_terminal_image
+
+
+def _solve_quality_tier_from_request(data: dict) -> str:
+    tier = str(
+        data.get("solveQualityTier") or data.get("solve_quality_tier") or "standard"
+    ).strip().lower()
+    return tier if tier in ("fast", "standard", "thorough") else "standard"
+
+
+from modules.run_code import execute_code, get_java_exe, java_status_info
 from modules.solve_lab import solve_lab
 from modules.uml import render_uml_diagrams
 from agent.document_store import (
@@ -52,10 +59,13 @@ from agent.run_control import (
     RunBusyError,
     acquire_run,
     cancel_run,
+    get_active_run_id,
     get_run,
+    get_run_events,
     iter_events,
     map_api_error,
     release_run,
+    respond_jar_consent,
 )
 from agent.user_profile import load_profile, merge_profile, normalize_profile, save_profile, record_revise_tags
 from agent.template_analyzer import prepare_format_spec_for_session
@@ -134,6 +144,43 @@ def put_profile():
     return jsonify({"profile": saved, "schema_version": SETTINGS_SCHEMA_VERSION})
 
 
+@app.route("/api/skill-candidates", methods=["GET"])
+def get_skill_candidates():
+    from agent.skill_store import list_skill_candidates
+
+    status = request.args.get("status") or "pending"
+    candidates = list_skill_candidates(status=status if status != "all" else None)
+    return jsonify(
+        {
+            "candidates": candidates,
+            "count": len(candidates),
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+    )
+
+
+@app.route("/api/skill-candidates/promote", methods=["POST"])
+def post_skill_candidate_promote():
+    from agent.skill_store import promote_skill_candidate
+
+    data = request.json or {}
+    candidate_id = (data.get("id") or data.get("candidate_id") or "").strip()
+    if not candidate_id:
+        return jsonify({"error": "缺少 id"}), 400
+    try:
+        result = promote_skill_candidate(
+            candidate_id,
+            inject=(data.get("inject") or "").strip(),
+            description=(data.get("description") or "").strip(),
+        )
+        return jsonify({**result, "schema_version": SETTINGS_SCHEMA_VERSION})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("skill-candidates/promote", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/template/analyze", methods=["POST"])
 def template_analyze():
     data = request.json or {}
@@ -177,10 +224,11 @@ def get_logs():
 
 @app.route("/api/runtime-status", methods=["GET"])
 def runtime_status():
-    from config import get_all_runtime_status, get_diagram_tools_status
+    from config import OCR_OK, get_all_runtime_status, get_diagram_tools_status, get_ocr_install_guide
 
     status = get_all_runtime_status()
     diagram_tools = get_diagram_tools_status()
+    ocr = get_ocr_install_guide()
     return jsonify({
         "runtimes": status,
         "any_available": status["any_available"],
@@ -188,6 +236,8 @@ def runtime_status():
         "plantuml_jar_ok": diagram_tools["plantuml_jar_ok"],
         "java_ok": diagram_tools["java_ok"],
         "graphviz_ok": diagram_tools["graphviz_ok"],
+        "ocr_ok": OCR_OK,
+        "ocr": ocr,
     })
 
 
@@ -196,14 +246,86 @@ def runtime_status():
 # ══════════════════════════════════════════════════════
 
 
+def _parse_ocr_settings(data: dict) -> dict:
+    reading_mode = str(
+        data.get("imageReadingMode") or data.get("image_reading_mode") or "ocr_only"
+    ).strip().lower()
+    if reading_mode not in ("ocr_only", "hybrid", "vision"):
+        reading_mode = "ocr_only"
+    return {
+        "enable_image_ocr": bool(
+            data.get("enableImageOcr") or data.get("enable_image_ocr")
+        ),
+        "ocr_lang": str(data.get("imageOcrLang") or data.get("ocr_lang") or "chi_sim+eng"),
+        "ocr_max_pages": int(
+            data.get("imageOcrMaxPages") or data.get("ocr_max_pages") or 20
+        ),
+        "image_reading_mode": reading_mode,
+        "vision_max_pages": int(
+            data.get("imageVisionMaxPages") or data.get("vision_max_pages") or 5
+        ),
+        "llm_settings": {
+            "api_key": data.get("api_key") or data.get("apiKey") or "",
+            "provider": str(data.get("provider") or "deepseek"),
+            "model": str(data.get("model") or "deepseek-chat"),
+            "custom_url": data.get("customUrl") or data.get("custom_url") or "",
+        },
+    }
+
+
+def _collect_image_assets_from_parsed(parsed: dict) -> tuple[list, dict]:
+    all_image_assets: list = []
+    all_image_meta: dict = {}
+    for d in parsed.get("_bundles") or []:
+        imgs = (d.get("metadata") or {}).get("image_assets") or []
+        all_image_assets.extend(imgs)
+        if d.get("metadata", {}).get("image_bundle_meta"):
+            all_image_meta = d["metadata"]["image_bundle_meta"]
+    extra = parsed.get("_user_upload_assets") or []
+    if extra:
+        known = {img.get("sha256") for img in all_image_assets if img.get("sha256")}
+        for img in extra:
+            sha = img.get("sha256")
+            if sha and sha in known:
+                continue
+            all_image_assets.append(img)
+            if sha:
+                known.add(sha)
+    if all_image_assets:
+        for i, img in enumerate(all_image_assets):
+            img["id"] = f"img_{i + 1:03d}"
+            img["order"] = i
+        all_image_meta["deduped"] = len(all_image_assets)
+    return all_image_assets, all_image_meta
+
+
 @app.route("/api/parse-report", methods=["POST"])
 def parse_report_route():
     data = request.json or {}
     documents = data.get("documents")
+    assignment_images = (
+        data.get("assignment_images")
+        or data.get("assignmentImages")
+        or data.get("user_upload_images")
+        or []
+    )
+    ocr_settings = _parse_ocr_settings(data)
 
-    if documents:
+    if documents or assignment_images:
         try:
-            parsed = parse_documents_list(documents)
+            if documents:
+                parsed = parse_documents_list(
+                    documents,
+                    assignment_images=assignment_images,
+                    **ocr_settings,
+                )
+            else:
+                from agent.parse_documents import parse_assignment_images_only
+
+                parsed = parse_assignment_images_only(
+                    assignment_images,
+                    **ocr_settings,
+                )
 
             # Store parsed bundles in document_store so subsequent
             # /api/agent/plan and /api/agent/run can resolve via document_ids.
@@ -242,19 +364,7 @@ def parse_report_route():
                 except Exception as e:
                     logi("parse", f"multi-doc detect_docx_sections skipped: {e}")
 
-            # IM1: collect image_assets from all parsed docs
-            all_image_assets = []
-            all_image_meta = {}
-            for d in parsed.get("_bundles") or []:
-                imgs = (d.get("metadata") or {}).get("image_assets") or []
-                all_image_assets.extend(imgs)
-                if d.get("metadata", {}).get("image_bundle_meta"):
-                    all_image_meta = d["metadata"]["image_bundle_meta"]
-            if all_image_assets:
-                for i, img in enumerate(all_image_assets):
-                    img["id"] = f"img_{i + 1:03d}"
-                    img["order"] = i
-                all_image_meta["deduped"] = len(all_image_assets)
+            all_image_assets, all_image_meta = _collect_image_assets_from_parsed(parsed)
 
             return jsonify(
                 {
@@ -281,6 +391,10 @@ def parse_report_route():
                     "table_map": table_map,
                     "image_assets": all_image_assets,
                     "image_bundle_meta": all_image_meta,
+                    "assignment_from_images": parsed.get("assignment_from_images", False),
+                    "image_reading_mode": parsed.get("image_reading_mode") or "",
+                    "image_read_summary": parsed.get("image_read_summary"),
+                    "image_sections": parsed.get("image_sections") or [],
                     "runtimes_available": _runtimes_available_fields(),
                     "schema_version": SETTINGS_SCHEMA_VERSION,
                 }
@@ -299,7 +413,17 @@ def parse_report_route():
         tmp.write_bytes(file_bytes)
         logi("parse", f"{file_name} ({len(file_bytes)} bytes)")
 
-        question, metadata, full_text, warnings = build_question_from_document(tmp, file_name)
+        question, metadata, full_text, warnings = build_question_from_document(
+            tmp,
+            file_name,
+            enable_image_ocr=bool(
+                data.get("enableImageOcr") or data.get("enable_image_ocr")
+            ),
+            ocr_lang=str(data.get("imageOcrLang") or data.get("ocr_lang") or "chi_sim+eng"),
+            ocr_max_pages=int(
+                data.get("imageOcrMaxPages") or data.get("ocr_max_pages") or 20
+            ),
+        )
         logi(
             "parse",
             f"提取文本 len={len(full_text)} 表格元数据键={list(metadata.keys())} warnings={len(warnings)}",
@@ -350,6 +474,11 @@ def parse_report_route():
                 "table_map": sections_data.get("table_map") or metadata.get("table_map") or [],
                 "image_assets": question.get("image_assets") or metadata.get("image_assets") or [],
                 "image_bundle_meta": question.get("image_bundle_meta") or metadata.get("image_bundle_meta") or {},
+                "assignment_text": question.get("assignment_text") or metadata.get("document_assignment_text") or "",
+                "assignment_from_images": question.get("assignment_from_images", False),
+                "image_reading_mode": question.get("image_reading_mode") or metadata.get("image_reading_mode") or "",
+                "image_read_summary": question.get("image_read_summary") or metadata.get("image_read_summary"),
+                "image_sections": question.get("image_sections") or metadata.get("image_sections") or [],
                 "runtimes_available": _runtimes_available_fields(),
                 "schema_version": SETTINGS_SCHEMA_VERSION,
             }
@@ -531,6 +660,7 @@ def agent_plan():
         "provider": provider,
         "model": model,
         "custom_url": custom_url,
+        "solveQualityTier": _solve_quality_tier_from_request(data),
     }
 
     try:
@@ -561,6 +691,14 @@ def agent_plan():
             assignment_text = bundle.get("assignment_text", "")
             fill_target = None
             documents_summary = None
+
+        override_assignment = (data.get("assignment_text") or "").strip()
+        if override_assignment and isinstance(bundle, dict):
+            from agent.parse_documents import apply_assignment_text_override
+
+            apply_assignment_text_override(bundle, override_assignment)
+            assignment_text = bundle["assignment_text"]
+            planner_input = bundle["planner_input_text"]
 
         metadata["document_ids"] = document_ids
         needs_uml = bool(
@@ -715,6 +853,7 @@ def agent_run():
         "provider": data.get("provider", "deepseek"),
         "model": data.get("model", "deepseek-chat"),
         "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+        "solveQualityTier": _solve_quality_tier_from_request(data),
     }
     profile = normalize_profile(
         merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
@@ -795,10 +934,20 @@ def agent_run():
         )
         if user_constraints_run:
             ctx["user_constraints"] = user_constraints_run
+        approved_jar_ids_run = [
+            str(i).strip()
+            for i in (data.get("approved_jar_ids") or data.get("approvedJarIds") or [])
+            if str(i).strip()
+        ]
+        if approved_jar_ids_run:
+            ctx["approved_jar_ids"] = approved_jar_ids_run
         prov_custom_run = (data.get("provenance_custom_label") or data.get("provenanceCustomLabel") or "").strip()
         if prov_custom_run:
             ctx["provenance_custom_label"] = prov_custom_run
-        ctx["auto_remediate"] = bool(data.get("auto_remediate", False))
+        if "auto_remediate" in data:
+            ctx["auto_remediate"] = bool(data.get("auto_remediate"))
+        else:
+            ctx["auto_remediate"] = run_mode == "deep"
         ctx["replan_rounds"] = 0
         ctx["understand"] = data.get("understand") or {}
         if data.get("module_results"):
@@ -848,7 +997,11 @@ def agent_run():
             }
         )
     except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        msg = str(e)
+        body = {"error": msg}
+        if "文档缓存已过期或不存在" in msg:
+            body["stale_documents"] = True
+        return jsonify(body), 400
     except Exception as e:
         loge("agent/run", traceback.format_exc())
         mapped = map_api_error(e)
@@ -858,11 +1011,12 @@ def agent_run():
 @app.route("/api/agent/events")
 def agent_events():
     run_id = request.args.get("run_id", "")
+    since = int(request.args.get("since") or 0)
     if not run_id or not get_run(run_id):
         return jsonify({"error": "run_id 无效或已结束"}), 404
 
     def generate():
-        for ev in iter_events(run_id):
+        for ev in iter_events(run_id, since=since):
             yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
 
     return Response(
@@ -995,6 +1149,60 @@ def agent_revise():
         return jsonify(mapped), mapped.get("http_status", 500)
 
 
+@app.route("/api/agent/active-run")
+def agent_active_run():
+    """Return in-flight run_id when UI lost local state after refresh (RL10)."""
+    run_id = get_active_run_id()
+    if not run_id:
+        return jsonify({"error": "无执行中任务"}), 404
+    return jsonify(
+        {
+            "run_id": run_id,
+            "status": "running",
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+    )
+
+
+@app.route("/api/agent/run-status")
+def agent_run_status():
+    """Poll run progress / replay SSE events after disconnect (RL10)."""
+    run_id = request.args.get("run_id", "")
+    since = int(request.args.get("since") or 0)
+    if not run_id:
+        return jsonify({"error": "缺少 run_id"}), 400
+    status, events = get_run_events(run_id, since=since)
+    if status == "missing":
+        return jsonify({"error": "run_id 无效或已结束"}), 404
+    return jsonify(
+        {
+            "run_id": run_id,
+            "status": status,
+            "events": events,
+            "since": since,
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+    )
+
+
+@app.route("/api/agent/jar-consent", methods=["POST"])
+def agent_jar_consent():
+    """Resume solve_lab sandbox after user approves curated jar download (RL8)."""
+    data = request.json or {}
+    run_id = (data.get("run_id") or "").strip()
+    if not run_id:
+        return jsonify({"error": "缺少 run_id"}), 400
+    approved = bool(data.get("approved"))
+    jar_ids = [
+        str(i).strip()
+        for i in (data.get("jar_ids") or data.get("approved_jar_ids") or [])
+        if str(i).strip()
+    ]
+    if not respond_jar_consent(run_id, approved, jar_ids or None):
+        return jsonify({"error": "run_id 无效或不在等待 jar 确认"}), 404
+    return jsonify({"success": True, "run_id": run_id, "approved": approved})
+
+
 @app.route("/api/agent/cancel", methods=["POST"])
 def agent_cancel():
     data = request.json or {}
@@ -1125,6 +1333,39 @@ def java_status():
     return jsonify(java_status_info())
 
 
+@app.route("/api/java-jars", methods=["GET"])
+def java_jars_list():
+    from modules.java_jars import list_curated_jars_status
+
+    return jsonify({"jars": list_curated_jars_status(), "sandbox_only": True})
+
+
+@app.route("/api/java-jars/download", methods=["POST"])
+def java_jars_download():
+    from modules.java_jars import CURATED_JAR_CATALOG, download_curated_jar, invalidate_java_env_cache
+
+    data = request.json or {}
+    raw_ids = data.get("ids") or data.get("jar_ids") or []
+    if data.get("id"):
+        raw_ids = list(raw_ids) + [data["id"]]
+    ids = [str(i).strip() for i in raw_ids if str(i).strip()]
+    if not ids:
+        return jsonify({"error": "缺少 ids"}), 400
+    unknown = [i for i in ids if i not in CURATED_JAR_CATALOG]
+    if unknown:
+        return jsonify({"error": f"未知 jar: {', '.join(unknown)}"}), 400
+    try:
+        installed = []
+        for jar_id in ids:
+            path = download_curated_jar(jar_id)
+            installed.append({"id": jar_id, "path": str(path)})
+        invalidate_java_env_cache()
+        return jsonify({"success": True, "installed": installed, "sandbox_only": True})
+    except Exception as e:
+        loge("java_jars", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/download-jre", methods=["POST"])
 def download_jre():
     JRE_URL = (
@@ -1231,155 +1472,6 @@ def run_code():
     except Exception as e:
         loge("run", traceback.format_exc())
         return jsonify({"output": f"[ERR] {e}", "error": True, "needs_jre": False})
-
-
-# ══════════════════════════════════════════════════════
-# 截图
-# ══════════════════════════════════════════════════════
-
-
-@app.route("/api/screenshot-terminal", methods=["POST"])
-def screenshot_terminal():
-    data = request.json
-    text = data.get("text", "")
-    title = data.get("title", "Terminal")
-    code = data.get("code", "")
-    language = data.get("language", "python")
-    style = data.get("style", "ide")
-
-    try:
-        if style == "ide" and IDE_RENDER_OK and (code or text):
-            paths = render_ide_screenshot_file(
-                code,
-                text,
-                language,
-                filename=data.get("filename", ""),
-                chrome_style=data.get("chrome_style", "windows"),
-            )
-            img_path = paths[0]
-        else:
-            img_path = render_terminal_image(text, title)
-        img_b64 = base64.b64encode(Path(img_path).read_bytes()).decode()
-        return jsonify(
-            {"success": True, "image_b64": img_b64, "path": img_path, "style": style}
-        )
-    except Exception as e:
-        loge("screenshot", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/screenshot-screen", methods=["POST"])
-def screenshot_screen():
-    data = request.json
-    delay = data.get("delay", 2)
-
-    try:
-        import time
-
-        time.sleep(delay)
-        try:
-            import pyautogui
-
-            img = pyautogui.screenshot()
-        except ImportError:
-            try:
-                import PIL.ImageGrab
-
-                img = PIL.ImageGrab.grab()
-            except Exception:
-                raise Exception("截图功能需要安装 pyautogui: pip install pyautogui")
-
-        out_path = str(TEMP_DIR / "screen_screenshot.png")
-        img.save(out_path)
-        img_b64 = base64.b64encode(Path(out_path).read_bytes()).decode()
-        logi("screenshot", f"屏幕截图: {out_path}")
-        return jsonify({"success": True, "image_b64": img_b64, "path": out_path})
-    except Exception as e:
-        loge("screenshot", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/run-and-screenshot", methods=["POST"])
-def run_and_screenshot():
-    from modules.preflight import _check_execution_pattern
-
-    data = request.json
-    code = data.get("code", "")
-    language = data.get("language", "java")
-    has_gui = data.get("has_gui", False)
-    chrome_style = data.get("chrome_style", "windows")
-    terminal_profile = data.get("terminal_profile", "")
-    terminal_cwd = data.get("terminal_cwd", "")
-    terminal_custom = data.get("terminal_custom_prompt", "")
-    full_layout = data.get("full_layout", True)
-
-    if language == "java" and not get_java_exe():
-        return jsonify({"needs_jre": True})
-
-    # P0B: preflight code execution pattern before running
-    if code.strip():
-        exec_check = _check_execution_pattern(code, language)
-        if not exec_check.get("ok"):
-            logi("run_screenshot", f"blocked by preflight: pattern={exec_check.get('pattern')}")
-            return jsonify({
-                "output": exec_check.get("message", "代码无法安全执行"),
-                "is_error": False,
-                "blocked_by_preflight": True,
-                "preflight_pattern": exec_check.get("pattern"),
-                "preflight_message": exec_check.get("message"),
-            })
-
-    try:
-        output, is_error = execute_code(code, language)
-        img_paths = []
-        images_b64 = []
-        img_b64 = None
-        img_path = None
-
-        if has_gui:
-            import time
-
-            launch_async_gui(code, language)
-            time.sleep(3)
-            try:
-                import pyautogui
-
-                img = pyautogui.screenshot()
-                img_path = str(TEMP_DIR / "gui_screenshot.png")
-                img.save(img_path)
-                img_b64 = base64.b64encode(Path(img_path).read_bytes()).decode()
-            except Exception as e:
-                img_b64 = None
-                loge("screenshot", f"GUI截图失败: {e}")
-        else:
-            img_paths = render_ide_screenshot_file(
-                code,
-                output,
-                language,
-                chrome_style=chrome_style,
-                terminal_profile=terminal_profile,
-                terminal_cwd=terminal_cwd,
-                terminal_custom=terminal_custom,
-                full_layout=full_layout,
-            )
-            images_b64 = paths_to_b64(img_paths)
-            img_b64 = images_b64[0] if images_b64 else None
-            img_path = img_paths[0] if img_paths else None
-
-        return jsonify(
-            {
-                "output": output,
-                "is_error": is_error,
-                "image_b64": img_b64,
-                "images_b64": images_b64 if not has_gui else ([img_b64] if img_b64 else []),
-                "page_count": len(images_b64) if not has_gui else (1 if img_b64 else 0),
-                "image_path": img_path,
-                "image_paths": img_paths if not has_gui else None,
-            }
-        )
-    except Exception as e:
-        loge("run_screenshot", traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
 
 
 # ══════════════════════════════════════════════════════
@@ -1612,6 +1704,11 @@ def tool_solve():
             data.get("user_constraints") or data.get("userConstraints")
         )
         settings["user_constraints"] = user_constraints
+        approved_jar_ids = [
+            str(i).strip()
+            for i in (data.get("approved_jar_ids") or data.get("approvedJarIds") or [])
+            if str(i).strip()
+        ]
         result = solve_lab(
             settings["api_key"],
             settings["provider"],
@@ -1622,6 +1719,7 @@ def tool_solve():
             format_spec=data.get("format_spec"),
             settings=settings,
             user_constraints=user_constraints,
+            approved_jar_ids=approved_jar_ids or None,
         )
         parsed = result.get("parsed") or {}
         payload = {
@@ -1644,6 +1742,63 @@ def tool_solve():
         return _tool_ok(payload)
     except Exception as e:
         loge("tool/solve", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+@app.route("/api/tool/retry-validation", methods=["POST"])
+def tool_retry_validation():
+    """Re-run internal validation after user approved curated jar download."""
+    data = request.json or {}
+    session = data.get("solve_session")
+    if not session:
+        return _tool_err("缺少 solve_session")
+    settings = _tool_settings(data)
+    if not settings["api_key"]:
+        return _tool_err("未填写 API Key")
+    try:
+        from modules.solve_pipeline import retry_pipeline_validation
+        from modules.user_constraints import normalize_user_constraints
+
+        user_constraints = normalize_user_constraints(
+            data.get("user_constraints") or data.get("userConstraints")
+        )
+        approved_jar_ids = [
+            str(i).strip()
+            for i in (data.get("approved_jar_ids") or data.get("approvedJarIds") or [])
+            if str(i).strip()
+        ]
+        question = {
+            "type": "lab_report",
+            "full_text": (data.get("text") or data.get("full_text") or "").strip(),
+            "content": (data.get("text") or data.get("full_text") or "").strip(),
+            "preferred_lang": data.get("language") or data.get("code_language") or "",
+        }
+        result = retry_pipeline_validation(
+            settings,
+            session,
+            question,
+            tier=data.get("tier") or "standard",
+            approved_jar_ids=approved_jar_ids or None,
+        )
+        parsed = result.get("parsed") or {}
+        payload = {
+            "answer": result.get("answer", ""),
+            "parsed": parsed,
+            "code": parsed.get("code") or result.get("code", ""),
+            "code_files": parsed.get("code_files") or result.get("code_files", []),
+            "main_file": parsed.get("main_file") or result.get("main_file", ""),
+            "language": parsed.get("language") or result.get("language", ""),
+            "steps_analysis": parsed.get("steps_analysis", ""),
+            "result_description": parsed.get("result_description", ""),
+            "summary": parsed.get("summary", ""),
+        }
+        if result.get("pipeline_meta"):
+            payload["pipeline_meta"] = result["pipeline_meta"]
+        if result.get("solve_session"):
+            payload["solve_session"] = result["solve_session"]
+        return _tool_ok(payload)
+    except Exception as e:
+        loge("tool/retry-validation", traceback.format_exc())
         return _tool_err(str(e), 500)
 
 
@@ -1685,40 +1840,7 @@ def tool_run():
         return _tool_err(str(e), 500)
 
 
-# ── 4. 截图 ──
-
-@app.route("/api/tool/screenshot", methods=["POST"])
-def tool_screenshot():
-    data = request.json or {}
-    code = data.get("code", "")
-    language = data.get("language", "python")
-    theme = data.get("theme") or data.get("chrome_style", "windows")
-    output_text = data.get("output_text") or data.get("output", "")
-    if not code.strip():
-        return _tool_err("缺少 code")
-    try:
-        paths = render_ide_screenshot_file(
-            code,
-            output_text,
-            language,
-            filename=data.get("filename", ""),
-            chrome_style=theme,
-        )
-        images_b64 = paths_to_b64(paths)
-        return _tool_ok(
-            {
-                "images_b64": images_b64,
-                "image_b64": images_b64[0] if images_b64 else None,
-                "page_count": len(images_b64),
-                "paths": paths,
-            }
-        )
-    except Exception as e:
-        loge("tool/screenshot", traceback.format_exc())
-        return _tool_err(str(e), 500)
-
-
-# ── 5. 图表渲染（PlantUML + DFD） ──
+# ── 4. 图表渲染（PlantUML + DFD） ──
 
 def _parse_tool_diagrams(data: dict) -> list | None:
     """Accept diagrams array, dfd_json, plantuml_src, or JSON string input."""

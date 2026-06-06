@@ -2,7 +2,7 @@
 
 const COMPLIANCE_STORAGE_KEY = 'compliance';
 const DISCLAIMER_VERSION = 1;
-const ONBOARDING_VERSION = 1;
+const ONBOARDING_VERSION = 2;
 
 const DISCLAIMER_HTML = `
 <p>本软件（解题能手）仅供<strong>课程学习与实验报告写作参考</strong>，不构成代写或学术不端服务。</p>
@@ -29,15 +29,15 @@ const PRIVACY_HTML = (logFilePath) => `
 const ONBOARDING_STEPS = [
   {
     title: '1. 上传文档',
-    body: '将实验报告（.docx）或题目 PDF 拖入 Step 1。默认生成答案内容，由你自行粘贴；高级模式可尝试填入 Word。',
+    body: '将实验报告（.docx）或题目 PDF 拖入 Step 1。主路径是<strong>生成答案内容</strong>，由你自行粘贴到学校模版或学习通。',
   },
   {
-    title: '2. 分节工作台',
-    body: '在 Step 2 为「三、四、五」等节选择填写方式：AI 填写、用我的内容、不填、有内容不覆盖等；可点「智能解析」拆分老师要求。',
+    title: '2. 生成约束与执行',
+    body: 'Step 2 可设置语言、是否内化验证代码、诚信标注等。点「生成计划 → 执行」后进入<strong>答案工作区</strong>，分节复制或下载 Markdown / docx / 代码 zip。',
   },
   {
-    title: '3. 标准模式（推荐）',
-    body: '使用<strong>解题模式</strong>：标准（生成计划→执行）、深度（预检+审稿）或 ReAct（AI 自主决策）。',
+    title: '3. 填表为高级可选',
+    body: '「尝试填入 Word 模版」在<strong>高级 / 实验性</strong>区，不保证版式；填表失败不影响复制或下载答案。工具箱主链为 #1 解析 → #2 解题。',
   },
 ];
 
@@ -335,9 +335,11 @@ function buildHistoryRecord(base, ctx) {
   const decisionSummary = summarizeDecisionLog(ctx.decisionLog);
   const runMode = ctx.runMode || 'standard';
   const runModeLabel =
-    runMode === 'deep'
-        ? '深度模式'
-        : '标准模式';
+    runMode === 'react'
+      ? '实验 ReAct'
+      : runMode === 'deep'
+        ? '深度'
+        : '标准';
 
   const record = {
     ...base,
@@ -349,6 +351,16 @@ function buildHistoryRecord(base, ctx) {
     plan_fingerprint: ctx.planFingerprint || undefined,
     exported_at: new Date().toISOString(),
   };
+  const rs = ctx.runSummary;
+  if (rs && typeof rs === 'object') {
+    record.run_summary = rs;
+    if (rs.pipeline_version || rs.code_status) {
+      record.pipeline_meta = {
+        version: rs.pipeline_version,
+        code_status: rs.code_status,
+      };
+    }
+  }
   const pf = ctx.planFeedback;
   if (pf && pf.plan_feedback) {
     record.plan_feedback = pf.plan_feedback;

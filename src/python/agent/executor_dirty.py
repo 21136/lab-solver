@@ -36,9 +36,9 @@ FIELD_TO_GROUP: dict[str, str] = {
 # Downstream modules invalidated when a logical group changes.
 GROUP_TO_MODULES: dict[str, frozenset[str]] = {
     "steps": frozenset({"fill_report"}),
-    "result": frozenset({"fill_report", "screenshot_ide", "screenshot_terminal"}),
+    "result": frozenset({"fill_report"}),
     "summary": frozenset({"fill_report"}),
-    "code": frozenset({"run_code", "fix_code", "screenshot_ide", "screenshot_terminal", "fill_report"}),
+    "code": frozenset({"run_code", "fix_code", "fill_report"}),
     "diagrams": frozenset({"render_uml", "fill_report"}),
 }
 
@@ -103,8 +103,6 @@ def downstream_modules_for_groups(groups: set[str]) -> list[str]:
         return [
             "run_code",
             "fix_code",
-            "screenshot_ide",
-            "screenshot_terminal",
             "render_uml",
             "fill_report",
         ]
@@ -245,35 +243,69 @@ def sub_fingerprints_unchanged(
     return module not in set(ctx.get("dirty_modules") or [])
 
 
-def modules_to_rerun_from_verify(suggested_actions: list[str]) -> list[str]:
+def code_status_from_ctx(ctx: dict[str, Any] | None) -> str:
+    """Read V4 code_status from orchestrator context."""
+    if not ctx:
+        return ""
+    pipeline_meta = ctx.get("pipeline_meta") or {}
+    if pipeline_meta.get("code_status"):
+        return str(pipeline_meta["code_status"])
+    solve_session = ctx.get("solve_session") or {}
+    if solve_session.get("code_status"):
+        return str(solve_session["code_status"])
+    solve_mr = (ctx.get("module_results") or {}).get("solve_lab") or {}
+    data = solve_mr.get("data") or {}
+    meta = data.get("pipeline_meta") or {}
+    return str(meta.get("code_status") or "")
+
+
+def modules_to_rerun_from_verify(
+    suggested_actions: list[str],
+    ctx: dict[str, Any] | None = None,
+) -> list[str]:
     """Map verify_answer suggested_actions to executor module ids."""
+    verified = code_status_from_ctx(ctx) == "verified"
     out: list[str] = []
     for action in suggested_actions or []:
         a = (action or "").strip().lower()
         if a == "fix_code":
+            if verified:
+                continue
             out.extend(["fix_code", "run_code"])
         elif a == "fix_diagrams":
             out.extend(["fix_diagrams", "render_uml"])
         elif a == "render_uml":
             out.append("render_uml")
         elif a.startswith("revise_section:"):
-            out.append("fill_report")
+            if verified:
+                out.append("revise_answer")
+            else:
+                out.append("fill_report")
         elif a == "revise_full":
-            out.append("solve_lab")
+            if verified:
+                out.append("revise_answer")
+            else:
+                out.append("solve_lab")
     return list(dict.fromkeys(out))
 
 
 def mark_dirty_from_verify(ctx: dict[str, Any], suggested_actions: list[str]) -> list[str]:
     """Mark modules dirty from verify suggested_actions so remediate reruns them."""
-    modules = modules_to_rerun_from_verify(suggested_actions)
+    modules = modules_to_rerun_from_verify(suggested_actions, ctx)
     existing = set(ctx.get("dirty_modules") or [])
     existing.update(modules)
     ctx["dirty_modules"] = sorted(existing)
+    verified = code_status_from_ctx(ctx) == "verified"
 
     for action in suggested_actions or []:
         a = (action or "").strip().lower()
         if a == "revise_full":
-            ctx["dirty_fields"] = {"solve_lab": ["full"]}
+            if verified:
+                ctx["dirty_fields"] = {
+                    "solve_lab": ["steps_analysis", "result_description", "summary", "expected_output"]
+                }
+            else:
+                ctx["dirty_fields"] = {"solve_lab": ["full"]}
             ctx["fill_sections"] = None
             break
         if a == "fix_diagrams":
@@ -281,10 +313,12 @@ def mark_dirty_from_verify(ctx: dict[str, Any], suggested_actions: list[str]) ->
             break
         if a.startswith("revise_section:"):
             section = a.split(":", 1)[-1].strip()
-            if section:
+            if verified:
+                ctx["dirty_fields"] = {"solve_lab": [section]}
+            elif section:
                 ctx["fill_sections"] = fill_sections_for_groups({section}, ctx=ctx) or [section]
             break
-        if a == "fix_code":
+        if a == "fix_code" and not verified:
             ctx["dirty_fields"] = {"solve_lab": ["code"]}
             break
 

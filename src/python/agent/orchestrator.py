@@ -154,15 +154,16 @@ class RunOrchestrator:
             note_module_completed(self.ctx, module)
             self.emit(done_payload)
         else:
-            self.ctx["consecutive_failures"] = int(self.ctx.get("consecutive_failures") or 0) + 1
+            from agent.executor import module_failure_blocks_pipeline, progress_payload_for_module_result
+
             result_data = result.get("data") or {}
             err_msg = result_data.get("error", "失败")
-            set_last_error(self.run_id, module, err_msg)
-            done_payload["error"] = err_msg
-            error_meta = _build_error_meta(result_data, module)
-            if error_meta:
-                done_payload["error_meta"] = error_meta
-            self.emit(done_payload)
+            if module_failure_blocks_pipeline(module, result):
+                self.ctx["consecutive_failures"] = int(self.ctx.get("consecutive_failures") or 0) + 1
+                set_last_error(self.run_id, module, err_msg)
+            else:
+                self.ctx["consecutive_failures"] = 0
+            self.emit(progress_payload_for_module_result(module, result, index=index))
 
         return result
 
@@ -345,25 +346,19 @@ class RunOrchestrator:
                 i += 1
                 continue
 
-            self.ctx["consecutive_failures"] = int(self.ctx.get("consecutive_failures") or 0) + 1
+            from agent.executor import module_failure_blocks_pipeline, progress_payload_for_module_result
+
             result_data = result.get("data") or {}
             err_msg = result_data.get("error", "失败")
-            if opts.set_last_error_on_fail:
-                set_last_error(self.run_id, module, err_msg)
-            fail_payload: dict[str, Any] = {
-                "type": "progress",
-                "module": module,
-                "index": i,
-                "status": "failed",
-                "error": err_msg,
-            }
-            if opts.run_code_error_meta and module == "run_code":
-                error_meta = _build_error_meta(result_data, module)
-                if error_meta:
-                    fail_payload["error_meta"] = error_meta
-            self.emit(fail_payload)
+            if module_failure_blocks_pipeline(module, result):
+                self.ctx["consecutive_failures"] = int(self.ctx.get("consecutive_failures") or 0) + 1
+                if opts.set_last_error_on_fail:
+                    set_last_error(self.run_id, module, err_msg)
+            else:
+                self.ctx["consecutive_failures"] = 0
+            self.emit(progress_payload_for_module_result(module, result, index=i))
 
-            if stop_on_failure:
+            if stop_on_failure and module_failure_blocks_pipeline(module, result):
                 return self.completed_modules, False
 
             if self.ctx["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
@@ -404,7 +399,8 @@ class RunOrchestrator:
             and verification.get("suggested_actions")
         ):
             suggested = list(verification.get("suggested_actions") or [])
-            rerun_modules = modules_to_rerun_from_verify(suggested)
+            suggested = _filter_remediate_actions(suggested, self.ctx)
+            rerun_modules = modules_to_rerun_from_verify(suggested, self.ctx)
             if not rerun_modules:
                 break
 
@@ -466,7 +462,7 @@ class RunOrchestrator:
         max_rounds: int = 12,
         emit_fn: Callable[[dict], None] | None = None,
     ) -> list[dict[str, Any]]:
-        """Post-loop finalize: UML / screenshot / fill_report (from react_finalize_pipeline)."""
+        """Post-loop finalize: UML / present_deliverable / fill_report (from react_finalize_pipeline)."""
         from agent.react_tools import _format_result_summary, emit_react_cycle
         from log_util import logi
 
@@ -480,13 +476,10 @@ class RunOrchestrator:
 
         output_mode = self.ctx.get("output_mode", "deliverable")
         content_only = is_content_only_output_mode(output_mode)
-        screenshot_mod = _pick_screenshot_module(steps or [])
 
         todo: list[tuple[str, str]] = []
         if _should_render_uml(self.ctx):
             todo.append(("render_uml", "补跑 UML 渲染（ReAct 未执行）"))
-        if screenshot_mod and not _module_done(self.ctx, screenshot_mod):
-            todo.append((screenshot_mod, "补跑截图（ReAct 未执行）"))
         if content_only and not _module_done(self.ctx, "present_deliverable"):
             todo.append(("present_deliverable", "汇编答案交付物（ReAct 未执行）"))
         elif not content_only and not _module_done(self.ctx, "fill_report"):
@@ -536,13 +529,27 @@ class RunOrchestrator:
     def build_run_summary(self) -> dict:
         """Structured run summary for SSE done event (V3-4)."""
         from llm_client import get_llm_call_count
+        from modules.solve_pipeline import pipeline_version, resolve_solve_quality_tier
 
         fill_mr = (self.ctx.get("module_results") or {}).get("fill_report")
         verification = self.ctx.get("verification_report") or {}
         mode = (self.ctx.get("run_mode") or "standard").lower()
         skills = list(self.ctx.get("skills_fired") or [])
+        settings = self.ctx.get("settings") or {}
+        pipeline_meta = self.ctx.get("pipeline_meta") or {}
+        solve_session = self.ctx.get("solve_session") or {}
+        solve_mr = (self.ctx.get("module_results") or {}).get("solve_lab") or {}
+        solve_data_meta = ((solve_mr.get("data") or {}).get("pipeline_meta") or {})
+        code_status = (
+            pipeline_meta.get("code_status")
+            or solve_session.get("code_status")
+            or solve_data_meta.get("code_status")
+        )
         return {
             "mode": mode,
+            "solve_quality_tier": resolve_solve_quality_tier(settings),
+            "pipeline_version": pipeline_meta.get("version") or pipeline_version(settings),
+            "code_status": code_status,
             "llm_calls": get_llm_call_count(),
             "replan_count": self.replan_count,
             "verify_pass": bool(verification.get("passed")),
@@ -551,6 +558,22 @@ class RunOrchestrator:
             "finalize_ran": bool(self.ctx.get("finalize_ran")),
             "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
         }
+
+
+def _filter_remediate_actions(suggested: list[str], ctx: dict) -> list[str]:
+    """Drop code-fix actions when V4 pipeline already verified code (AO-5)."""
+    from agent.executor_dirty import code_status_from_ctx
+
+    if code_status_from_ctx(ctx) != "verified":
+        return suggested
+    blocked = {"fix_code", "run_code"}
+    out: list[str] = []
+    for action in suggested:
+        a = (action or "").strip().lower()
+        if a in blocked:
+            continue
+        out.append(action)
+    return out
 
 
 def finalize_run_payload(orch: RunOrchestrator, final: dict) -> dict:
@@ -581,11 +604,3 @@ def _should_render_uml(ctx: dict) -> bool:
         return False
     parsed = (solve.get("data") or {}).get("parsed") or {}
     return bool(parsed.get("diagrams"))
-
-
-def _pick_screenshot_module(steps: list) -> str | None:
-    for step in steps:
-        mod = (step.get("module") or "").strip()
-        if mod in ("screenshot_ide", "screenshot_terminal") and _step_checked(step):
-            return mod
-    return "screenshot_ide"

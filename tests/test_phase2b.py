@@ -118,7 +118,7 @@ def test_sub_fingerprints_stable():
     assert a["summary"] != a["code"]
 
 
-def test_revise_summary_reuses_screenshot():
+def test_revise_summary_skips_run():
     solve = {
         "type": "lab_report",
         "parsed": {
@@ -135,7 +135,6 @@ def test_revise_summary_reuses_screenshot():
         "module_results": {
             "solve_lab": {"ok": True, "data": solve, "sub_fingerprints": compute_sub_fingerprints(solve)},
             "run_code": {"ok": True, "data": {"output": "1", "is_error": False}},
-            "screenshot_ide": {"ok": True, "data": {"images_b64": ["abc"]}},
             "fill_report": {"ok": True, "data": {"output_path": "/tmp/x.docx"}},
         },
         "dirty_modules": [],
@@ -145,18 +144,16 @@ def test_revise_summary_reuses_screenshot():
     apply_revise_to_module_results(ctx, solve2, changed_fields=["summary"])
     dirty = mark_dirty_from_revise(ctx, changed_fields=["summary"], scope=["summary"])
     assert "fill_report" in dirty
-    assert "screenshot_ide" not in dirty
     assert "run_code" not in dirty
-    assert not should_rerun_module(ctx, "screenshot_ide")
     assert not should_rerun_module(ctx, "run_code")
     assert should_rerun_module(ctx, "fill_report")
     assert fill_sections_for_groups({"summary"}) == ["summary"]
 
 
-def test_revise_code_marks_run_and_screenshot():
+def test_revise_code_marks_run():
     dirty = downstream_modules_for_groups({"code"})
     assert "run_code" in dirty
-    assert "screenshot_ide" in dirty
+    assert "fill_report" in dirty
 
 
 if __name__ == "__main__":
@@ -167,6 +164,6 @@ if __name__ == "__main__":
     test_verify_schema()
     test_issues_fingerprint_stable()
     test_sub_fingerprints_stable()
-    test_revise_summary_reuses_screenshot()
-    test_revise_code_marks_run_and_screenshot()
+    test_revise_summary_skips_run()
+    test_revise_code_marks_run()
     print("test_phase2b: OK")

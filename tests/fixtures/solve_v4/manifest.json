@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "fixtures": [
+    {
+      "id": "01_fifo_lru",
+      "docx": "01_fifo_lru.docx",
+      "preferred_lang": "java",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"Main.java\", \"code\": \"public class Main {\\n  public static void main(String[] args) {\\n    System.out.println(\\\"FIFO hits: 3\\\");\\n    System.out.println(\\\"LRU hits: 4\\\");\\n  }\\n}\\n\"}], \"main_file\": \"Main.java\", \"language\": \"java\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"FIFO 命中率 3，LRU 命中率 4。\", \"summary\": \"实验总结。\", \"expected_output\": \"FIFO hits: 3\\nLRU hits: 4\\n\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "FIFO hits"
+      }
+    },
+    {
+      "id": "02_factory_singleton",
+      "docx": "02_factory_singleton.docx",
+      "preferred_lang": "java",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"Main.java\", \"code\": \"interface Product { String name(); }\\nclass ConcreteProduct implements Product {\\n  public String name() { return \\\"product\\\"; }\\n}\\nclass Factory {\\n  static Product create() { return new ConcreteProduct(); }\\n}\\npublic class Main {\\n  public static void main(String[] args) {\\n    Product p = Factory.create();\\n    System.out.println(p.name());\\n  }\\n}\\n\"}], \"main_file\": \"Main.java\", \"language\": \"java\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"工厂创建产品并输出 product。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "product"
+      }
+    },
+    {
+      "id": "03_thread_join",
+      "docx": "03_thread_join.docx",
+      "preferred_lang": "java",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"Main.java\", \"code\": \"public class Main {\\n  public static void main(String[] args) throws Exception {\\n    Thread t = new Thread(() -> System.out.println(\\\"worker\\\"));\\n    t.start();\\n    t.join();\\n    System.out.println(\\\"done\\\");\\n  }\\n}\\n\"}], \"main_file\": \"Main.java\", \"language\": \"java\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"主线程等待子线程结束后输出 done。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "done"
+      }
+    },
+    {
+      "id": "04_sort_c",
+      "docx": "04_sort_c.docx",
+      "preferred_lang": "c",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"main.c\", \"code\": \"#include <stdio.h>\\nint main() {\\n  int a[] = {3, 1, 2};\\n  for (int i = 0; i < 3; i++)\\n    for (int j = i + 1; j < 3; j++)\\n      if (a[i] > a[j]) { int t = a[i]; a[i] = a[j]; a[j] = t; }\\n  printf(\\\"sorted\\\\n\\\");\\n  return 0;\\n}\\n\"}], \"main_file\": \"main.c\", \"language\": \"c\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"冒泡排序后输出 sorted。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "sorted"
+      }
+    },
+    {
+      "id": "05_file_io_python",
+      "docx": "05_file_io_python.docx",
+      "preferred_lang": "python",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"main.py\", \"code\": \"with open(\\\"golden_io.txt\\\", \\\"w\\\", encoding=\\\"utf-8\\\") as f:\\n    f.write(\\\"lab-data\\\")\\nwith open(\\\"golden_io.txt\\\", encoding=\\\"utf-8\\\") as f:\\n    print(f.read())\\n\"}], \"main_file\": \"main.py\", \"language\": \"python\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"文件读写输出 lab-data。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "lab-data"
+      }
+    },
+    {
+      "id": "06_theory_only",
+      "docx": "06_theory_only.docx",
+      "preferred_lang": "python",
+      "expected_code_status": "skipped",
+      "mock_llm": [
+        "{\"steps_analysis\": \"分析 TCP 三次握手各阶段报文特征。\", \"result_description\": \"SYN、SYN-ACK、ACK 依次交互建立连接。\", \"summary\": \"理解了握手时序与标志位含义。\"}"
+      ],
+      "assertions": {}
+    },
+    {
+      "id": "07_web_simulation",
+      "docx": "07_web_simulation.docx",
+      "preferred_lang": "java",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"Main.java\", \"code\": \"public class Main {\\n  public static void main(String[] args) {\\n    System.out.println(\\\"模拟 Web 请求处理 OK\\\");\\n  }\\n}\\n\"}], \"main_file\": \"Main.java\", \"language\": \"java\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"内存模拟 Web 请求，无 Servlet 容器。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "Web"
+      }
+    },
+    {
+      "id": "08_multifile_java",
+      "docx": "08_multifile_java.docx",
+      "preferred_lang": "java",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"Helper.java\", \"code\": \"class Helper {\\n  static String greet() { return \\\"hello\\\"; }\\n}\\n\"}, {\"name\": \"Main.java\", \"code\": \"public class Main {\\n  public static void main(String[] args) {\\n    System.out.println(Helper.greet());\\n  }\\n}\\n\"}], \"main_file\": \"Main.java\", \"language\": \"java\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"多文件包结构编译运行输出 hello。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "hello"
+      }
+    },
+    {
+      "id": "09_linked_list_cpp",
+      "docx": "09_linked_list_cpp.docx",
+      "preferred_lang": "cpp",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"main.cpp\", \"code\": \"#include <iostream>\\nstruct Node { int v; Node* next; };\\nint main() {\\n  Node n{1, nullptr};\\n  std::cout << \\\"list ok\\\" << std::endl;\\n  return 0;\\n}\\n\"}], \"main_file\": \"main.cpp\", \"language\": \"cpp\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"链表节点创建成功，输出 list ok。\", \"summary\": \"实验总结。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "list ok"
+      }
+    },
+    {
+      "id": "10_no_emoji",
+      "docx": "10_no_emoji.docx",
+      "preferred_lang": "java",
+      "expected_code_status": "verified",
+      "mock_llm": [
+        "{\"code_files\": [{\"name\": \"Main.java\", \"code\": \"public class Main {\\n  public static void main(String[] args) {\\n    System.out.println(\\\"run ok\\\");\\n  }\\n}\\n\"}], \"main_file\": \"Main.java\", \"language\": \"java\"}",
+        "{\"steps_analysis\": \"实验步骤说明。\", \"result_description\": \"程序正常结束，输出 run ok。\", \"summary\": \"未使用 emoji 符号。\"}"
+      ],
+      "assertions": {
+        "stdout_contains": "run ok",
+        "no_emoji_in_result": true
+      }
+    }
+  ]
+}

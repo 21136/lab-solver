@@ -12,7 +12,7 @@
   <!-- 自定义标题栏 -->
   <div class="titlebar">
     <div class="titlebar-left">
-      <div class="app-icon">🧠</div>
+      <div class="app-icon icon icon-md" data-icon="brain"></div>
       <span class="app-title">解题能手</span>
       <span class="app-version">v1.0</span>
     </div>
@@ -30,21 +30,21 @@
     <nav class="sidebar">
       <div class="nav-items">
         <button class="nav-item active" data-tab="home" onclick="switchTab('home')">
-          <span class="nav-icon">🏠</span>
+          <span class="nav-icon icon icon-md" data-icon="home"></span>
           <span class="nav-label">主页</span>
         </button>
         <button class="nav-item" data-tab="history" onclick="switchTab('history')">
-          <span class="nav-icon">📋</span>
+          <span class="nav-icon icon icon-md" data-icon="clipboard-list"></span>
           <span class="nav-label">历史</span>
         </button>
         <button class="nav-item" data-tab="settings" onclick="switchTab('settings')">
-          <span class="nav-icon">⚙️</span>
+          <span class="nav-icon icon icon-md" data-icon="settings"></span>
           <span class="nav-label">设置</span>
         </button>
       </div>
-      <div class="sidebar-status">
+      <div class="sidebar-status" title="连接中…">
         <div class="status-dot" id="serverStatus"></div>
-        <span id="serverStatusText">连接中...</span>
+        <span id="serverStatusText">连接中…</span>
       </div>
     </nav>
 
@@ -52,322 +52,403 @@
     <main class="content">
       <!-- 主页标签 -->
       <div class="tab-panel active" id="tab-home">
-        <!-- 步骤指示器 -->
-        <div class="steps-bar">
-          <div class="step active" data-step="1">
-            <div class="step-circle">1</div>
-            <span>上传报告</span>
-          </div>
-          <div class="step-line"></div>
-          <div class="step" data-step="2">
-            <div class="step-circle">2</div>
-            <span>计划确认</span>
-          </div>
-          <div class="step-line"></div>
-          <div class="step" data-step="3">
-            <div class="step-circle">3</div>
-            <span>答案工作区</span>
-          </div>
-          <div class="step-line"></div>
-          <div class="step" data-step="4">
-            <div class="step-circle">4</div>
-            <span>复制导出</span>
+        <!-- 步骤指示器（P3-A2：与 Step 2 .parse-result 同宽左对齐） -->
+        <div class="steps-bar-wrap">
+          <div class="steps-bar" aria-label="解题流程">
+            <div class="step active" data-step="1">
+              <div class="step-circle">1</div>
+              <span>上传报告</span>
+            </div>
+            <div class="step-line" data-after-step="1"></div>
+            <div class="step" data-step="2">
+              <div class="step-circle">2</div>
+              <span>计划确认</span>
+            </div>
+            <div class="step-line" data-after-step="2"></div>
+            <div class="step" data-step="3">
+              <div class="step-circle">3</div>
+              <span>答案与导出</span>
+            </div>
           </div>
         </div>
 
         <!-- 步骤1：上传 -->
         <div class="step-content active" id="step-1">
           <div class="step1-layout">
-            <div class="upload-area" id="uploadArea"
-                 ondragover="handleDragOver(event)"
-                 ondrop="handleDrop(event)"
-                 ondragleave="handleDragLeave(event)"
-                 onclick="triggerAddDocuments()">
-              <div class="upload-icon" id="uploadIcon">📄</div>
-              <h2 id="uploadTitle">拖拽或点击添加文档</h2>
-              <p class="upload-subhint" id="uploadAreaHint">支持 .doc / .docx / .pdf，可多次添加组成文档清单</p>
-              <div class="upload-role-hints">
-                <span class="role-hint-chip assignment">题目 / 要求</span>
-                <span class="role-hint-chip fill_target">待填报告</span>
-                <span class="role-hint-chip answer_template">范文 / 模版</span>
-                <span class="role-hint-chip reference">参考资料</span>
-              </div>
-              <button class="btn-primary" id="addDocsBtn" onclick="event.stopPropagation(); triggerAddDocuments()">
-                添加文档
-              </button>
-              <button class="btn-secondary" id="pasteAssignmentBtn" onclick="event.stopPropagation(); openPasteAssignmentModal()">
-                粘贴题目 / 要求
-              </button>
-            </div>
-
-            <div class="document-list-panel" id="documentListPanel">
-              <div class="panel-header">
-                <h3>📁 文档清单</h3>
-                <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); openPasteAssignmentModal()">粘贴题目</button>
-                <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); triggerAddDocuments()">+ 添加</button>
-              </div>
-              <div class="document-list" id="documentList">
-                <div class="empty-state doc-list-empty" id="documentListEmpty">
-                  <span>📭</span>
-                  <p>尚未添加文档</p>
+            <div class="step1-grid">
+              <div class="upload-area" id="uploadArea"
+                   ondragover="handleDragOver(event)"
+                   ondrop="handleDrop(event)"
+                   ondragleave="handleDragLeave(event)"
+                   onclick="triggerAddDocuments()">
+                <div class="upload-drop-inner">
+                  <div class="upload-icon icon icon-xl" id="uploadIcon" data-icon="file-text"></div>
+                  <h2 id="uploadTitle">拖拽或点击添加文档</h2>
+                  <p class="upload-subhint" id="uploadAreaHint">支持 .doc / .docx / .pdf，可多次添加组成文档清单</p>
+                </div>
+                <div class="upload-role-section" onclick="event.stopPropagation()">
+                  <span class="upload-role-label">文档角色类型</span>
+                  <div class="upload-role-hints" aria-label="支持的文档角色">
+                    <span class="role-hint-chip assignment"><span class="role-chip-dot" aria-hidden="true"></span>题目 / 要求</span>
+                    <span class="role-hint-chip fill_target"><span class="role-chip-dot" aria-hidden="true"></span>待填报告</span>
+                    <span class="role-hint-chip answer_template"><span class="role-chip-dot" aria-hidden="true"></span>范文 / 模版</span>
+                    <span class="role-hint-chip reference"><span class="role-chip-dot" aria-hidden="true"></span>参考资料</span>
+                  </div>
+                </div>
+                <div class="upload-actions" onclick="event.stopPropagation()">
+                  <button type="button" class="btn-secondary" id="addDocsBtn" onclick="triggerAddDocuments()">
+                    <span class="icon icon-sm" data-icon="folder"></span>添加文档
+                  </button>
+                  <button type="button" class="btn-ghost" id="pasteAssignmentBtn" onclick="openPasteAssignmentModal()">
+                    <span class="icon icon-sm" data-icon="clipboard-list"></span>粘贴题目 / 要求
+                  </button>
                 </div>
               </div>
-              <div class="document-list-actions">
-                <button type="button" class="btn-primary" id="parseDocumentsBtn" disabled onclick="parseAllDocuments()">
-                  解析并继续
+
+              <div class="document-list-panel" id="documentListPanel">
+                <div class="panel-header">
+                  <h3><span class="icon icon-sm" data-icon="folder"></span>文档清单</h3>
+                  <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); openPasteAssignmentModal()">粘贴题目</button>
+                  <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); triggerAddDocuments()">+ 添加</button>
+                </div>
+                <div class="document-table-wrap">
+                  <table class="document-table" aria-label="文档清单">
+                    <thead>
+                      <tr>
+                        <th scope="col" class="col-filename">文件名</th>
+                        <th scope="col" class="col-role">角色</th>
+                        <th scope="col" class="col-actions">操作</th>
+                      </tr>
+                    </thead>
+                    <tbody id="documentList">
+                      <tr class="doc-list-empty" id="documentListEmpty">
+                        <td colspan="3">
+                          <div class="empty-state doc-list-empty-inner">
+                            <div class="empty-state-illustration" aria-hidden="true">
+                              <span class="icon icon-lg" data-icon="inbox"></span>
+                            </div>
+                            <p class="empty-state-title">尚未添加文档</p>
+                            <p class="empty-state-hint">拖拽文件到上传区，或点击「+ 添加」</p>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="document-list-actions">
+                  <button type="button" class="btn-primary" id="parseDocumentsBtn" disabled onclick="parseAllDocuments()">
+                    解析并继续
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="step1-secondary">
+              <details class="step1-fold-panel" id="step1AssignmentImagesFold">
+                <summary class="step1-fold-summary">
+                  <span class="icon icon-sm" data-icon="images"></span>
+                  <span class="step1-fold-title">题目图片组（可选）</span>
+                  <span class="form-hint step1-fold-hint">截图/扫描页作题目，支持 OCR 识题</span>
+                </summary>
+                <div class="step1-fold-body">
+                  <p class="form-hint">多选图片作为题目来源（与文档可同时使用）。勾选参与识题、拖拽调整顺序；顺序与解析请求中的 assignment_images 一致。</p>
+                  <div class="assignment-image-mode-hint is-hidden" id="assignmentImageModeHint" role="status"></div>
+                  <div class="assignment-image-actions">
+                    <button type="button" class="btn-secondary btn-sm" onclick="triggerAddAssignmentImages()">
+                      <span class="icon icon-sm" data-icon="image-plus"></span>添加图片
+                    </button>
+                    <button type="button" class="btn-ghost btn-sm is-hidden" id="clearAssignmentImagesBtn" onclick="clearAssignmentImages()">清空</button>
+                  </div>
+                  <div class="assignment-image-strip is-hidden" id="assignmentImageStrip" aria-label="题目图片缩略图条"></div>
+                  <div class="assignment-image-empty" id="assignmentImageEmpty">
+                    <span class="form-hint">尚未添加题目图片</span>
+                  </div>
+                </div>
+              </details>
+
+              <details class="step1-fold-panel" id="step1TemplateFold">
+                <summary class="step1-fold-summary">
+                  <span class="icon icon-sm" data-icon="file-pen"></span>
+                  <span class="step1-fold-title">答题模版 / 范文（可选）</span>
+                  <span class="form-hint step1-fold-hint">仅供参考，以当前报告为准</span>
+                </summary>
+                <div class="step1-fold-body">
+                  <div class="template-upload-panel" id="templateUploadPanel">
+                    <p class="form-hint template-disclaimer">仅供参考，以当前报告为准；不与作业章节硬性绑定</p>
+                    <div class="template-upload-actions">
+                      <button type="button" class="btn-secondary btn-sm" onclick="triggerAnswerTemplateUpload()">上传 .docx 范文</button>
+                      <button type="button" class="btn-ghost btn-sm is-hidden" id="clearTemplateBtn" onclick="clearAnswerTemplate()">清除</button>
+                    </div>
+                    <div class="template-summary-card is-hidden" id="templateSummaryCard">
+                      <div class="template-summary-text" id="templateSummaryText"></div>
+                      <div class="template-section-tags" id="templateSectionTags"></div>
+                      <button type="button" class="btn-secondary btn-sm" id="confirmTemplateBtn" onclick="confirmAnswerTemplate()">确认采用格式建议</button>
+                    </div>
+                    <div class="template-confirmed-bar is-hidden" id="templateConfirmedBar">
+                      <span class="section-tag template" id="templateConfirmedLabel">已确认格式建议</span>
+                    </div>
+                  </div>
+                </div>
+              </details>
+
+              <div class="split-preview-panel is-hidden" id="splitPreviewPanel">
+                <div class="panel-header">
+                  <h3><span class="icon icon-sm" data-icon="scissors"></span>合体文档拆分预览</h3>
+                  <span class="form-hint">自动识别实验步骤标题为拆分点，可手选调整</span>
+                </div>
+                <div class="split-controls">
+                  <label class="config-label">拆分标题</label>
+                  <select class="lang-select-big" id="splitHeadingSelect" onchange="onSplitHeadingChange()"></select>
+                  <button type="button" class="btn-secondary btn-sm" onclick="reparseWithSplitHeading()">应用拆分</button>
+                </div>
+                <div class="split-preview-columns">
+                  <div class="split-preview-col">
+                    <div class="split-preview-label">题目段（拆分点之前）</div>
+                    <div class="split-preview-body" id="splitPreviewAssignment"></div>
+                  </div>
+                  <div class="split-preview-col">
+                    <div class="split-preview-label">填表段（拆分点起）</div>
+                    <div class="split-preview-body" id="splitPreviewFill"></div>
+                  </div>
+                </div>
+                <button type="button" class="btn-primary is-hidden" id="splitConfirmBtn" onclick="confirmSplitAndContinue()">
+                  确认拆分并进入计划
                 </button>
               </div>
             </div>
 
-            <div class="split-preview-panel" id="splitPreviewPanel" style="display:none">
-              <div class="panel-header">
-                <h3>✂️ 合体文档拆分预览</h3>
-                <span class="form-hint">自动识别实验步骤标题为拆分点，可手选调整</span>
-              </div>
-              <div class="split-controls">
-                <label class="config-label">拆分标题</label>
-                <select class="lang-select-big" id="splitHeadingSelect" onchange="onSplitHeadingChange()"></select>
-                <button type="button" class="btn-secondary btn-sm" onclick="reparseWithSplitHeading()">应用拆分</button>
-              </div>
-              <div class="split-preview-columns">
-                <div class="split-preview-col">
-                  <div class="split-preview-label">题目段（拆分点之前）</div>
-                  <div class="split-preview-body" id="splitPreviewAssignment"></div>
-                </div>
-                <div class="split-preview-col">
-                  <div class="split-preview-label">填表段（拆分点起）</div>
-                  <div class="split-preview-body" id="splitPreviewFill"></div>
-                </div>
-              </div>
-              <button type="button" class="btn-primary" id="splitConfirmBtn" style="display:none" onclick="confirmSplitAndContinue()">
-                确认拆分并进入计划
-              </button>
+            <div class="demo-hint">
+              <span class="hint-icon icon icon-sm" data-icon="lightbulb"></span>
+              <span>没有报告？<a href="#" onclick="loadDemo()">加载演示文档</a>试试</span>
             </div>
-
-            <div class="template-upload-panel" id="templateUploadPanel">
-              <div class="panel-header">
-                <h3>📝 答题模版 / 范文（可选）</h3>
-                <span class="form-hint template-disclaimer">仅供参考，以当前报告为准；不与作业章节硬性绑定</span>
-              </div>
-              <div class="template-upload-actions">
-                <button type="button" class="btn-secondary btn-sm" onclick="triggerAnswerTemplateUpload()">上传 .docx 范文</button>
-                <button type="button" class="btn-ghost btn-sm" id="clearTemplateBtn" style="display:none" onclick="clearAnswerTemplate()">清除</button>
-              </div>
-              <div class="template-summary-card" id="templateSummaryCard" style="display:none">
-                <div class="template-summary-text" id="templateSummaryText"></div>
-                <div class="template-section-tags" id="templateSectionTags"></div>
-                <button type="button" class="btn-primary btn-sm" id="confirmTemplateBtn" onclick="confirmAnswerTemplate()">确认采用格式建议</button>
-              </div>
-              <div class="template-confirmed-bar" id="templateConfirmedBar" style="display:none">
-                <span class="section-tag template" id="templateConfirmedLabel">已确认格式建议</span>
-              </div>
-            </div>
-          </div>
-          <div class="demo-hint">
-            <span class="hint-icon">💡</span>
-            <span>没有报告？<a href="#" onclick="loadDemo()">加载演示文档</a>试试</span>
           </div>
         </div>
 
         <!-- 步骤2：解析结果 -->
         <div class="step-content" id="step-2">
-          <!-- 模式切换 -->
-          <div class="mode-switch-bar" id="modeSwitchBar" style="display:none">
-            <button class="mode-switch-tab active" data-mode="guided" onclick="switchToGuidedMode()">引导模式</button>
-            <button class="mode-switch-tab" data-mode="toolbox" onclick="switchToToolboxMode()">工具箱模式</button>
-          </div>
-
           <!-- 引导模式（现有 UI） -->
           <div class="parse-result" id="guidedModeContent">
             <div class="section-header">
-              <h3>📋 检测到的报告内容</h3>
+              <h3><span class="icon icon-sm" data-icon="clipboard-list"></span>检测到的报告内容</h3>
               <button class="btn-secondary" onclick="goToStep(1)">← 重新上传</button>
             </div>
 
-            <!-- 检测信息卡片 -->
-            <div class="detect-info-card" id="detectInfoCard" style="display:none">
-              <div class="detect-row">
-                <span class="detect-label">课程</span>
-                <span class="detect-value" id="detectCourse">—</span>
+            <!-- 检测摘要 hero -->
+            <div class="detect-hero is-hidden" id="detectInfoCard">
+              <div class="detect-hero-main">
+                <h4 class="detect-hero-title" id="detectTitle">—</h4>
+                <p class="detect-hero-meta">
+                  <span id="detectCourse">—</span>
+                  <span class="detect-hero-sep" aria-hidden="true">·</span>
+                  <span id="detectMajor">—</span>
+                </p>
               </div>
-              <div class="detect-row">
-                <span class="detect-label">实验</span>
-                <span class="detect-value" id="detectTitle">—</span>
+              <div class="detect-hero-badges" id="detectHeroBadges">
+                <span class="detect-hero-badge pdf is-hidden" id="pdfExportHint">PDF → 完成后导出 .docx</span>
               </div>
-              <div class="detect-row">
-                <span class="detect-label">专业</span>
-                <span class="detect-value" id="detectMajor">—</span>
-              </div>
-              <div class="detect-row" id="pdfExportHint" style="display:none">
-                <span class="detect-label">导出格式</span>
-                <span class="detect-value">.docx（PDF 无法直接填回，完成后将生成 Word）</span>
-              </div>
-              <div class="pdf-pair-bar" id="pdfPairDocxBar" style="display:none">
+              <div class="pdf-pair-bar is-hidden" id="pdfPairDocxBar">
                 <span class="pdf-pair-label" id="pdfPairDocxLabel">可选：添加空白 Word 模版，填表写入该 docx</span>
                 <button type="button" class="btn-secondary btn-sm" onclick="triggerPairedDocxUpload()">
                   选择 Word 模版
                 </button>
-                <button type="button" class="btn-ghost btn-sm" id="clearPairedDocxBtn" style="display:none" onclick="clearPairedDocx()">
+                <button type="button" class="btn-ghost btn-sm is-hidden" id="clearPairedDocxBtn" onclick="clearPairedDocx()">
                   清除
                 </button>
               </div>
             </div>
 
-            <div class="questions-list" id="questionsList"></div>
+            <!-- O30 识题预览（IM2-b / UI polish）：assignment_text + image_sections，确认后再生成计划 -->
+            <div class="assignment-preview-panel is-hidden" id="assignmentPreviewPanel">
+              <div class="panel-header">
+                <h3><span class="icon icon-sm" data-icon="scan-text"></span>识题预览</h3>
+                <span class="form-hint" id="assignmentPreviewHint">合并正文与识图结果后的题干，生成计划前请核对</span>
+              </div>
+              <div class="assignment-preview-meta is-hidden" id="assignmentPreviewMeta"></div>
+              <div class="assignment-preview-warn is-hidden" id="assignmentPreviewWarn" role="alert"></div>
+              <div class="assignment-image-sections is-hidden" id="assignmentImageSections"></div>
+              <label class="config-label" for="assignmentPreviewText">合并题干（可编辑）</label>
+              <textarea class="form-input assignment-preview-text" id="assignmentPreviewText"
+                rows="8" aria-label="合并后的题干预览"
+                oninput="onAssignmentPreviewTextInput()"></textarea>
+              <label class="assignment-preview-confirm">
+                <input type="checkbox" id="assignmentPreviewConfirm" onchange="onAssignmentPreviewConfirmChange()">
+                <span>已核对题干完整，可生成计划</span>
+              </label>
+            </div>
+
+            <div class="parse-ocr-banner is-hidden" id="parseOcrBanner" role="alert">
+              <span class="parse-ocr-banner-text" id="parseOcrBannerText"></span>
+              <button type="button" class="btn-secondary btn-sm" id="parseOcrEnableBtn"
+                onclick="enableOcrAndReparse()">开启 OCR 并重解析</button>
+            </div>
+
+            <details class="step2-questions-panel" id="step2QuestionsPanel">
+              <summary class="step2-questions-summary">
+                <span class="icon icon-sm" data-icon="layout-list"></span>
+                <span id="step2QuestionsSummaryText">检测到的题目</span>
+              </summary>
+              <div class="step2-questions-body">
+                <div class="questions-list" id="questionsList"></div>
+              </div>
+            </details>
 
             <!-- 分节工作台（Phase 3 UI） -->
             <div class="sections-workbench" id="sectionsWorkbench">
               <div class="sections-workbench-header">
-                <h4>📑 分节设置</h4>
+                <h4><span class="icon icon-sm" data-icon="layout-list"></span>分节设置</h4>
                 <span class="form-hint">每节选择填写方式；可混写正文与老师要求，点「智能解析」拆分</span>
               </div>
-              <div class="sections-global-bar solve-config-bar">
-                <div class="solve-config-item">
-                  <label class="config-label">编程语言</label>
-                  <select class="lang-select-big" id="solveLang">
-                    <option value="c">C语言</option>
-                    <option value="cpp">C++</option>
-                    <option value="java">Java</option>
-                    <option value="python" selected>Python</option>
-                    <option value="javascript">JavaScript</option>
-                  </select>
+              <div class="section-global-card">
+                <div class="section-global-card-header">
+                  <span class="icon icon-sm" data-icon="settings"></span>
+                  <span>全局设置</span>
                 </div>
-                <div class="solve-config-item">
-                  <label class="config-label">截图窗口</label>
-                  <select class="lang-select-big" id="screenshotChromeStep2" onchange="syncScreenshotChrome(this.value)">
-                    <option value="windows" selected>Windows</option>
-                    <option value="mac">macOS</option>
-                  </select>
-                </div>
-                <div class="solve-config-item">
-                  <button type="button" class="btn-secondary" style="padding:6px 10px;font-size:12px" onclick="collectTerminalEnv()" title="从 Cursor/VS Code 读取">🔍 采集终端</button>
-                </div>
-                <div class="solve-config-item">
-                  <label class="config-label">终端</label>
-                  <select class="lang-select-big" id="terminalProfileStep2" onchange="onTerminalSettingsChange()">
-                    <option value="win_powershell">PowerShell</option>
-                    <option value="win_cmd">CMD</option>
-                    <option value="win_gitbash">Git Bash</option>
-                    <option value="mac_zsh">mac zsh</option>
-                    <option value="custom">自定义</option>
-                  </select>
-                </div>
-                <div class="solve-config-item">
-                  <label class="config-label">
-                    <input type="checkbox" id="includeCodeCheck" checked>
-                    &nbsp;将源码写入报告
-                  </label>
-                </div>
-                <div class="solve-config-item">
-                  <label class="config-label" title="类图、时序图等（PlantUML 渲染）">
-                    <input type="checkbox" id="includeUmlCheck">
-                    &nbsp;生成 UML 图
-                  </label>
-                </div>
-              </div>
-              <div class="sections-global-bar solve-config-bar" id="userConstraintsBar">
-                <div class="solve-config-item user-constraints-panel">
-                  <label class="config-label">生成约束</label>
-                  <p class="form-hint">影响 AI 生成策略；默认开启内化验证（在沙箱试跑代码）</p>
-                  <div class="checkbox-row">
-                    <label class="config-label" title="不在本机 subprocess 试跑，仅生成代码与报告">
-                      <input type="checkbox" id="constraintSkipValidation" onchange="onUserConstraintsChange()">
-                      &nbsp;不用帮我跑，只要代码
-                    </label>
-                    <label class="config-label" title="禁止非 JDK 第三方 jar / import">
-                      <input type="checkbox" id="constraintNoExternalJar" onchange="onUserConstraintsChange()">
-                      &nbsp;不要任何第三方 jar
-                    </label>
-                    <label class="config-label" title="导出 docx/Markdown 时附加诚信页脚">
-                      <input type="checkbox" id="constraintProvenanceLabel" onchange="onUserConstraintsChange()">
-                      &nbsp;导出加诚信标注
+                <div class="sections-essential-bar solve-config-bar">
+                  <div class="solve-config-item">
+                    <label class="config-label" for="solveLang">编程语言</label>
+                    <select class="lang-select-big" id="solveLang">
+                      <option value="c">C语言</option>
+                      <option value="cpp">C++</option>
+                      <option value="java">Java</option>
+                      <option value="python" selected>Python</option>
+                      <option value="javascript">JavaScript</option>
+                    </select>
+                  </div>
+                  <div class="solve-config-item">
+                    <label class="config-label">
+                      <input type="checkbox" id="includeCodeCheck" checked>
+                      &nbsp;将源码写入报告
                     </label>
                   </div>
-                  <input type="text" class="form-input provenance-label-input" id="provenanceCustomLabel"
-                    placeholder="诚信文案（可选），如：内容由 AI 辅助生成，本人已核对"
-                    onchange="onProvenanceLabelChange()" oninput="onProvenanceLabelChange()">
-                </div>
-              </div>
-              <div class="sections-global-bar solve-config-bar" id="outputModeBar">
-                <div class="solve-config-item">
-                  <label class="config-label">输出方式</label>
-                  <p class="form-hint output-mode-hint">默认生成答案内容，由你自行粘贴到学校模版或学习通</p>
-                  <div class="radio-row">
-                    <label class="radio-label">
-                      <input type="radio" name="outputMode" value="deliverable" checked onchange="onOutputModeChange()">
-                      答案工作区（推荐）
+                  <div class="solve-config-item">
+                    <label class="config-label" title="类图、时序图等（PlantUML 渲染）">
+                      <input type="checkbox" id="includeUmlCheck">
+                      &nbsp;生成 UML 图
                     </label>
                   </div>
-                  <details class="output-mode-advanced">
-                    <summary>高级：尝试自动填入 Word（实验性）</summary>
-                    <div class="radio-row output-mode-advanced-options">
-                      <label class="radio-label">
-                        <input type="radio" name="outputMode" value="fill_original" onchange="onOutputModeChange()">
-                        填回原文档
-                      </label>
-                      <label class="radio-label">
-                        <input type="radio" name="outputMode" value="new_document" onchange="onOutputModeChange()">
-                        生成新文档
-                      </label>
-                      <label class="radio-label">
-                        <input type="radio" name="outputMode" value="answer_only" onchange="onOutputModeChange()">
-                        仅界面展示（同工作区）
-                      </label>
-                    </div>
-                    <p class="form-hint">不保证版式匹配；建议以复制粘贴为主</p>
-                  </details>
                 </div>
-              </div>
-              <div class="sections-global-rules">
-                <label class="config-label">老师总体要求（跨多节，可选）</label>
-                <textarea class="form-input sections-input" id="sectionsGlobalRules" rows="2" placeholder="如：全报告末尾须加诚信声明…"></textarea>
-                <button type="button" class="btn-secondary btn-sm sections-global-parse-btn" onclick="parseGlobalRulesBrief()">智能解析总体要求</button>
+                <div class="sections-global-rules">
+                  <label class="config-label">老师总体要求（跨多节，可选）</label>
+                  <textarea class="form-input sections-input" id="sectionsGlobalRules" rows="2" placeholder="如：全报告末尾须加诚信声明…"></textarea>
+                  <button type="button" class="btn-secondary btn-sm sections-global-parse-btn" onclick="parseGlobalRulesBrief()">智能解析总体要求</button>
+                </div>
               </div>
               <div class="sections-rows" id="sectionsRowsList"></div>
+
+              <details class="step2-advanced-panel" id="step2AdvancedPanel">
+                <summary class="step2-advanced-summary">
+                  <span class="icon icon-sm" data-icon="settings"></span>
+                  <span class="step2-advanced-title">高级选项</span>
+                  <span class="form-hint step2-advanced-hint">约束、输出方式、工具箱</span>
+                </summary>
+                <div class="step2-advanced-body">
+                  <div class="mode-switch-bar is-hidden" id="modeSwitchBar">
+                    <button type="button" class="mode-switch-tab active" data-mode="guided" onclick="switchToGuidedMode()">引导模式</button>
+                    <button type="button" class="mode-switch-tab" data-mode="toolbox" onclick="switchToToolboxMode()">工具箱模式</button>
+                  </div>
+                  <div class="sections-global-bar solve-config-bar step2-advanced-section" id="userConstraintsBar">
+                    <div class="solve-config-item user-constraints-panel">
+                      <label class="config-label">生成约束</label>
+                      <p class="form-hint">影响 AI 生成策略；默认开启内化验证（在沙箱试跑代码）</p>
+                      <div class="checkbox-row">
+                        <label class="config-label" title="不在本机 subprocess 试跑，仅生成代码与报告">
+                          <input type="checkbox" id="constraintSkipValidation" onchange="onUserConstraintsChange()">
+                          &nbsp;不用帮我跑，只要代码
+                        </label>
+                        <label class="config-label" title="禁止非 JDK 第三方 jar / import">
+                          <input type="checkbox" id="constraintNoExternalJar" onchange="onJarConstraintChange('no_external_jar')">
+                          &nbsp;不要任何第三方 jar
+                        </label>
+                        <label class="config-label" title="内化验证时可下载 H2/SQLite 白名单 jar（仅沙箱）">
+                          <input type="checkbox" id="constraintAllowCuratedJars" onchange="onJarConstraintChange('allow_curated_jars')">
+                          &nbsp;验证可用 H2/SQLite jar
+                        </label>
+                        <label class="config-label" title="导出 docx/Markdown 时附加诚信页脚">
+                          <input type="checkbox" id="constraintProvenanceLabel" onchange="onUserConstraintsChange()">
+                          &nbsp;导出加诚信标注
+                        </label>
+                      </div>
+                      <input type="text" class="form-input provenance-label-input" id="provenanceCustomLabel"
+                        placeholder="诚信文案（可选），如：内容由 AI 辅助生成，本人已核对"
+                        onchange="onProvenanceLabelChange()" oninput="onProvenanceLabelChange()">
+                    </div>
+                  </div>
+                  <div class="sections-global-bar solve-config-bar step2-advanced-section" id="outputModeBar">
+                    <div class="solve-config-item output-mode-panel">
+                      <label class="config-label">输出方式</label>
+                      <p class="form-hint output-mode-hint">默认生成答案内容，由你自行粘贴到学校模版或学习通</p>
+                      <div class="radio-row output-mode-options">
+                        <label class="radio-label">
+                          <input type="radio" name="outputMode" value="deliverable" checked onchange="onOutputModeChange()">
+                          答案工作区（推荐）
+                        </label>
+                        <label class="radio-label">
+                          <input type="radio" name="outputMode" value="fill_original" onchange="onOutputModeChange()">
+                          填回原文档（实验性）
+                        </label>
+                        <label class="radio-label">
+                          <input type="radio" name="outputMode" value="new_document" onchange="onOutputModeChange()">
+                          生成新文档（实验性）
+                        </label>
+                        <label class="radio-label">
+                          <input type="radio" name="outputMode" value="answer_only" onchange="onOutputModeChange()">
+                          仅界面展示
+                        </label>
+                      </div>
+                      <p class="form-hint">自动填 Word 不保证版式匹配；建议以复制粘贴为主</p>
+                    </div>
+                  </div>
+                </div>
+              </details>
             </div>
 
-            <div class="agent-stale-banner" id="agentStaleBanner" style="display:none">
+            <div class="agent-stale-banner is-hidden" id="agentStaleBanner">
               分节设置或文档已变更，请重新生成计划后再执行。
             </div>
 
-            <div class="sections-action-bar solve-config-bar">
-              <div class="solve-action-group" style="margin-left:0;width:100%;justify-content:flex-end">
+            <div class="sections-action-bar" id="sectionsActionBar">
+              <div class="solve-action-group sections-action-group">
                 <button class="btn-secondary" id="generatePlanBtn" onclick="generateAgentPlan()">
-                  📋 生成计划
+                  <span class="icon icon-sm" data-icon="clipboard-list"></span>生成计划
                 </button>
                 <button class="btn-primary" id="executePlanBtn" onclick="executeAgentPlan()" disabled>
-                  ▶ 执行计划
+                  <span class="icon icon-sm" data-icon="play"></span>执行计划
                 </button>
               </div>
             </div>
 
             <!-- Agent 计划预览（标准模式） -->
-            <div class="agent-plan-panel" id="agentPlanPanel" style="display:none">
+            <div class="agent-plan-panel is-hidden" id="agentPlanPanel">
               <div class="agent-plan-header">
-                <h4>📑 执行计划</h4>
+                <h4><span class="icon icon-sm" data-icon="layout-list"></span>执行计划</h4>
                 <span class="agent-plan-meta" id="agentPlanMeta"></span>
               </div>
-              <div class="agent-sections-summary" id="agentSectionsSummary" style="display:none"></div>
+              <div class="agent-sections-summary is-hidden" id="agentSectionsSummary"></div>
               <div class="plan-steps-list" id="planStepsList"></div>
-              <div class="clarifications-panel" id="clarificationsPanel" style="display:none"></div>
+              <div class="clarifications-panel is-hidden" id="clarificationsPanel"></div>
             </div>
           </div>
 
           <!-- 工具箱模式 -->
-          <div class="toolbox-panel" id="toolboxPanel" style="display:none">
+          <div class="toolbox-panel is-hidden" id="toolboxPanel">
             <div class="toolbox-header">
-              <h3>🧰 工具箱 — 生成答案，自行填写</h3>
+              <div class="toolbox-header-top">
+                <h3><span class="icon icon-sm" data-icon="toolbox"></span>工具箱 — 生成答案，自行填写</h3>
+                <button type="button" class="btn-ghost btn-sm" onclick="switchToGuidedMode()">
+                  <span class="icon icon-sm" data-icon="layout-list"></span>返回引导模式
+                </button>
+              </div>
               <span class="form-hint">主路径：解析 → 解题 → 在答案工作区复制；填表为高级实验功能</span>
-              <div class="toolbox-diagram-status" id="toolboxDiagramStatus" style="display:none"></div>
+              <div class="toolbox-diagram-status is-hidden" id="toolboxDiagramStatus"></div>
               <button type="button" class="btn-primary btn-sm toolbox-chain-btn" id="toolboxChainBtn"
-                onclick="runToolChain()" disabled>⚡ 一键链 (#1→#2 解题)</button>
+                onclick="runToolChain()" disabled><span class="icon icon-sm" data-icon="zap"></span>一键链 (#1→#2 解题)</button>
               <button type="button" class="btn-ghost btn-sm" id="toolboxResetBtn"
-                onclick="confirmResetToolbox()" title="重置所有工具状态">🔄 重置</button>
+                onclick="confirmResetToolbox()" title="重置所有工具状态"><span class="icon icon-sm" data-icon="refresh-cw"></span>重置</button>
             </div>
             <div class="toolbox-tools" id="toolboxTools"></div>
-            <div class="toolbox-output-bar" id="toolboxOutputBar" style="display:none">
-              <button type="button" class="btn-primary btn-sm" id="toolboxDownloadBtn" onclick="toolboxDownloadOutput()">📥 下载填写后的报告</button>
-              <button type="button" class="btn-secondary btn-sm" onclick="toolboxCopyLastJson()">📋 复制最后输出的 JSON</button>
+            <div class="toolbox-output-bar is-hidden" id="toolboxOutputBar">
+              <button type="button" class="btn-primary btn-sm" id="toolboxDownloadBtn" onclick="toolboxDownloadOutput()"><span class="icon icon-sm" data-icon="download"></span>下载填写后的报告</button>
+              <button type="button" class="btn-secondary btn-sm" onclick="toolboxCopyLastJson()"><span class="icon icon-sm" data-icon="copy"></span>复制最后输出的 JSON</button>
             </div>
           </div>
         </div>
@@ -376,15 +457,18 @@
         <div class="step-content" id="step-3">
           <div class="solving-panel">
             <div class="section-header">
-              <h3 id="step3Title">📋 答案工作区</h3>
+              <h3 id="step3Title"><span class="icon icon-sm" data-icon="clipboard-list"></span>答案工作区</h3>
               <div class="step3-header-actions">
-                <button class="btn-ghost" id="cancelAgentRunBtn" style="display:none" onclick="cancelAgentRun()">取消执行</button>
-                <button class="btn-ghost" onclick="goToStep(2)">← 返回</button>
+                <button class="btn-ghost is-hidden" id="cancelAgentRunBtn" onclick="cancelAgentRun()">取消执行</button>
+                <button type="button" class="btn-secondary btn-sm is-hidden" id="step3HomeBtn" onclick="startNew()">
+                  <span class="icon icon-sm" data-icon="home"></span>回到主页
+                </button>
+                <button type="button" class="btn-ghost" id="step3BackBtn" onclick="goToStep(2)">← 返回</button>
               </div>
             </div>
             <div class="step3-layout" id="step3Layout">
               <div class="step3-main">
-                <div class="agent-progress-wrap" id="agentProgressWrap" style="display:none">
+                <div class="agent-progress-wrap is-hidden" id="agentProgressWrap">
                   <div class="agent-progress-label">
                     <span id="agentProgressLabel">准备执行…</span>
                     <span id="agentProgressPct">0%</span>
@@ -395,34 +479,84 @@
                 </div>
                 <div class="solving-list" id="solvingList"></div>
 
-                <div class="deliverable-workspace" id="deliverableWorkspace" style="display:none">
-                  <div class="deliverable-header">
-                    <div class="deliverable-header-left">
+                <div class="deliverable-workspace is-hidden" id="deliverableWorkspace">
+                  <header class="deliverable-toolbar">
+                    <div class="deliverable-toolbar-left">
                       <span class="deliverable-validation-badge skipped" id="deliverableValidationBadge" title="代码验证状态">未验证</span>
                       <span class="form-hint" id="deliverableValidationNote">请自行在实验环境运行代码</span>
                     </div>
-                    <div class="deliverable-provenance" id="deliverableProvenance" style="display:none">
-                      <span class="deliverable-provenance-label" id="deliverableProvenanceLabel"></span>
-                      <span class="deliverable-integrity" title="内容摘要校验码（sections+code）">
-                        校验码 <code id="deliverableIntegrityHash">—</code>
-                        <button type="button" class="btn-ghost btn-xs" onclick="copyDeliverableIntegrityHash()" title="复制校验码">复制</button>
-                      </span>
+                    <div class="deliverable-actions deliverable-toolbar-actions">
+                      <div class="export-menu" id="exportMenu">
+                        <button type="button" class="btn-secondary btn-sm export-menu-trigger" id="exportMenuTrigger" onclick="toggleExportMenu(event)" aria-haspopup="menu" aria-expanded="false" aria-controls="exportMenuPanel">
+                          <span class="icon icon-sm" data-icon="download"></span>导出 ▾
+                        </button>
+                        <div class="export-menu-panel is-hidden" id="exportMenuPanel" role="menu" aria-labelledby="exportMenuTrigger">
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="copyDeliverableMarkdown(); closeExportMenu()"><span class="icon icon-sm" data-icon="copy"></span>复制 Markdown</button>
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="downloadDeliverableMarkdown(); closeExportMenu()"><span class="icon icon-sm" data-icon="download"></span>下载 Markdown</button>
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="downloadDeliverableCodeZip(); closeExportMenu()"><span class="icon icon-sm" data-icon="download"></span>下载代码 zip</button>
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="downloadDeliverableDiagramsZip(); closeExportMenu()"><span class="icon icon-sm" data-icon="download"></span>下载图表 zip</button>
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="copyDeliverableJson(); closeExportMenu()" title="复制完整 JSON"><span class="icon icon-sm" data-icon="copy"></span>复制 JSON</button>
+                        </div>
+                      </div>
+                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableDocx()"><span class="icon icon-sm" data-icon="download"></span>docx</button>
                     </div>
-                    <div class="deliverable-actions">
-                      <button type="button" class="btn-secondary btn-sm" onclick="copyDeliverableJson()">📋 JSON</button>
-                      <button type="button" class="btn-secondary btn-sm" onclick="copyDeliverableMarkdown()">📋 Markdown</button>
-                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableMarkdown()">⬇ Markdown</button>
-                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableDocx()">⬇ docx</button>
-                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableCodeZip()">⬇ 代码 zip</button>
-                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableDiagramsZip()">⬇ 图表 zip</button>
-                    </div>
+                  </header>
+                  <div class="deliverable-provenance is-hidden" id="deliverableProvenance">
+                    <span class="deliverable-provenance-label" id="deliverableProvenanceLabel"></span>
+                    <span class="deliverable-integrity" title="内容摘要校验码（sections+code）">
+                      校验码 <code id="deliverableIntegrityHash">—</code>
+                      <button type="button" class="btn-ghost btn-xs" onclick="copyDeliverableIntegrityHash()" title="复制校验码">复制</button>
+                    </span>
                   </div>
-                  <div class="deliverable-tabs" id="deliverableTabs"></div>
-                  <div class="deliverable-section-body" id="deliverableSectionBody"></div>
-                  <div class="deliverable-diagrams" id="deliverableDiagrams" style="display:none"></div>
+
+                  <div class="deliverable-preview-backdrop" id="deliverablePreviewBackdrop" hidden onclick="toggleDeliverablePreview(false)"></div>
+                  <div class="deliverable-grid" id="deliverableGrid">
+                    <aside class="deliverable-nav-col" aria-label="报告分节">
+                      <div class="deliverable-nav-header">
+                        <span class="deliverable-nav-title"><span class="icon icon-sm" data-icon="layout-list"></span>报告结构</span>
+                        <span class="deliverable-nav-count form-hint" id="deliverableNavCount"></span>
+                      </div>
+                      <nav class="deliverable-nav" id="deliverableTabs" role="tablist" aria-label="分节导航"></nav>
+                    </aside>
+
+                    <section class="deliverable-content-col" aria-label="本节正文">
+                      <div class="deliverable-content-header">
+                        <h4 class="deliverable-section-title" id="deliverableSectionTitle">步骤 / 分析</h4>
+                        <div class="deliverable-content-actions">
+                          <button type="button" class="btn-ghost btn-sm deliverable-preview-open is-hidden" id="deliverablePreviewOpen" onclick="toggleDeliverablePreview(true)">
+                            <span class="icon icon-sm" data-icon="file"></span>预览
+                          </button>
+                          <button type="button" class="btn-primary btn-sm" id="copySectionBtn" onclick="copyDeliverableSection()">
+                            <span class="icon icon-sm" data-icon="copy"></span>复制本节
+                          </button>
+                        </div>
+                      </div>
+                      <div class="deliverable-section-body" id="deliverableSectionBody" role="tabpanel"></div>
+                    </section>
+
+                    <aside class="deliverable-preview-col" id="deliverablePreviewCol" aria-label="代码与图表预览">
+                      <div class="deliverable-preview-header">
+                        <div class="deliverable-preview-tabs" id="deliverablePreviewTabs" role="tablist">
+                          <button type="button" class="deliverable-preview-tab active" data-preview="code" role="tab" aria-selected="true" onclick="switchDeliverablePreviewTab('code')">
+                            <span class="icon icon-sm" data-icon="file"></span>代码
+                          </button>
+                          <button type="button" class="deliverable-preview-tab" data-preview="diagrams" role="tab" aria-selected="false" onclick="switchDeliverablePreviewTab('diagrams')">
+                            <span class="icon icon-sm" data-icon="pie-chart"></span>图表
+                          </button>
+                        </div>
+                        <button type="button" class="btn-ghost btn-sm deliverable-preview-toggle" id="deliverablePreviewToggle" onclick="toggleDeliverablePreview(false)" aria-expanded="true" title="收起预览">
+                          <span class="icon icon-sm" data-icon="x"></span>
+                        </button>
+                      </div>
+                      <div class="deliverable-preview-body" id="deliverablePreviewBody">
+                        <div class="deliverable-code-preview" id="deliverableCodePreview"></div>
+                        <div class="deliverable-diagrams is-hidden" id="deliverableDiagrams"></div>
+                      </div>
+                    </aside>
+                  </div>
                 </div>
 
-                <div class="agent-verify-wrap" id="agentVerifyWrap" style="display:none">
+                <div class="agent-verify-wrap is-hidden" id="agentVerifyWrap">
                   <div class="agent-verify-header">
                     <h4>校验清单</h4>
                     <button type="button" class="btn-ghost btn-sm" onclick="runAgentVerify()">重新校验</button>
@@ -446,7 +580,7 @@
                         <button type="button" class="btn-secondary" onclick="openManualEdit()">我自己改</button>
                         <button type="button" class="btn-ghost" onclick="goToStep(2)">← 回分节设置</button>
                       </div>
-                      <div class="agent-version-row" id="agentVersionRow" style="display:none">
+                      <div class="agent-version-row is-hidden" id="agentVersionRow">
                         <select class="form-select" id="agentVersionSelect"></select>
                         <button type="button" class="btn-ghost btn-sm" onclick="restoreAgentVersion()">恢复所选版本</button>
                       </div>
@@ -455,7 +589,7 @@
                 </div>
 
                 <!-- 代码编辑器面板 -->
-            <div class="code-panel" id="codePanel" style="display:none">
+            <div class="code-panel is-hidden" id="codePanel">
               <div class="code-panel-header">
                 <span id="codePanelTitle">代码编辑器</span>
                 <div class="code-actions">
@@ -466,19 +600,14 @@
                     <option value="cpp">C++</option>
                     <option value="java">Java</option>
                   </select>
-                  <select id="screenshotChrome" class="lang-select" title="截图窗口样式" onchange="syncScreenshotChrome(this.value)">
-                    <option value="windows" selected>Win截图</option>
-                    <option value="mac">Mac截图</option>
-                  </select>
                   <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer">
                     <input type="checkbox" id="guiModeCheck"> GUI程序
                   </label>
-                  <button class="btn-run" onclick="runCode(false)">▶ 运行</button>
-                  <button class="btn-run" style="background:var(--purple)" onclick="runCode(true)">📸 运行+截图</button>
-                  <button class="btn-ghost" onclick="closeCodePanel()">✕</button>
+                  <button class="btn-run" onclick="runCode()"><span class="icon icon-sm" data-icon="play"></span>运行</button>
+                  <button class="btn-ghost" onclick="closeCodePanel()" aria-label="关闭"><span class="icon icon-sm" data-icon="x"></span></button>
                 </div>
               </div>
-              <div class="code-file-tabs" id="codeFileTabs" style="display:none"></div>
+              <div class="code-file-tabs is-hidden" id="codeFileTabs"></div>
               <div id="monacoEditor" style="height: 300px;"></div>
               <div class="console-output" id="consoleOutput">
                 <div class="console-header">输出</div>
@@ -486,14 +615,51 @@
               </div>
             </div>
 
-                <div class="action-bar" id="exportActionBar" style="display:none">
-                  <span class="export-hint" id="exportActionHint">💡 答案已生成，请从上方工作区复制分节内容；也可在代码面板试跑</span>
+                <div class="action-bar is-hidden" id="exportActionBar">
+                  <span class="export-hint" id="exportActionHint"><span class="icon icon-sm" data-icon="lightbulb"></span>答案已生成，请从上方工作区复制分节内容；也可在代码面板试跑</span>
+                  <button type="button" class="btn-secondary btn-sm is-hidden" id="exportActionHomeBtn" onclick="startNew()">
+                    <span class="icon icon-sm" data-icon="home"></span>回到主页
+                  </button>
                   <details class="export-advanced-fill" id="exportAdvancedFill">
                     <summary>高级：尝试填入 Word 模版（实验性）</summary>
                     <button type="button" class="btn-secondary btn-sm" onclick="generateReport()">
-                      📄 生成并填入报告
+                      <span class="icon icon-sm" data-icon="file-text"></span>生成并填入报告
                     </button>
                   </details>
+                </div>
+
+                <div class="export-success-panel is-hidden" id="exportSuccessPanel" aria-live="polite">
+                  <div class="export-success-card">
+                    <div class="export-success-header">
+                      <div class="export-success-icon icon icon-xl" data-icon="check-circle"></div>
+                      <div class="export-success-text">
+                        <h4>报告已生成</h4>
+                        <p id="exportSuccessSubtitle">请从答案工作区复制内容，自行粘贴到学校模版</p>
+                      </div>
+                      <button type="button" class="btn-ghost btn-sm export-success-dismiss" onclick="hideExportSuccessPanel()" aria-label="收起">
+                        <span class="icon icon-sm" data-icon="x"></span>
+                      </button>
+                    </div>
+                    <div class="export-preview" id="exportPreview"></div>
+                    <p class="export-thought-note is-hidden" id="thoughtLogSavedNote"></p>
+                    <div class="export-success-actions">
+                      <button type="button" class="btn-secondary btn-sm" onclick="exportReport()">
+                        <span class="icon icon-sm" data-icon="save"></span>下载完成的报告
+                      </button>
+                      <button type="button" class="btn-secondary btn-sm" onclick="exportThoughtLogManual()" id="exportThoughtLogBtn">
+                        <span class="icon icon-sm" data-icon="file-pen"></span>导出思考过程
+                      </button>
+                      <button type="button" class="btn-ghost btn-sm is-hidden" onclick="openThoughtLogFile()" id="openThoughtLogBtn">
+                        <span class="icon icon-sm" data-icon="file-text"></span>打开思考过程
+                      </button>
+                      <button type="button" class="btn-ghost btn-sm" onclick="openReportFolder()">
+                        <span class="icon icon-sm" data-icon="folder-open"></span>打开所在文件夹
+                      </button>
+                      <button type="button" class="btn-ghost btn-sm" onclick="startNew()">
+                        <span class="icon icon-sm" data-icon="refresh-cw"></span>处理新报告
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -502,7 +668,7 @@
                   <span>思考过程</span>
                   <div class="thought-sidebar-tools">
                     <span class="thought-sidebar-badge" id="thoughtSidebarBadge"></span>
-                    <button type="button" class="btn-ghost btn-sm" id="thoughtExportBtn" onclick="exportThoughtLogManual()" title="导出思考过程为文本文件" style="display:none">导出</button>
+                    <button type="button" class="btn-ghost btn-sm is-hidden" id="thoughtExportBtn" onclick="exportThoughtLogManual()" title="导出思考过程为文本文件">导出</button>
                     <button type="button" class="btn-ghost btn-sm" id="thoughtSidebarToggle" onclick="toggleThoughtSidebar()" aria-expanded="false">展开</button>
                   </div>
                 </div>
@@ -512,229 +678,307 @@
           </div>
         </div>
 
-        <!-- 步骤4：导出 -->
-        <div class="step-content" id="step-4">
-          <div class="export-panel">
-            <div class="success-header">
-              <div class="success-icon">✅</div>
-              <h2>答案已就绪</h2>
-              <p id="exportSuccessSubtitle">请从答案工作区复制内容，自行粘贴到学校模版</p>
-            </div>
-            <div class="export-preview" id="exportPreview"></div>
-            <p id="thoughtLogSavedNote" style="display:none;font-size:12px;color:var(--text-muted);margin:8px 0 0"></p>
-            <div class="export-actions">
-              <button class="btn-primary" onclick="exportReport()">
-                💾 下载完成的报告
-              </button>
-              <button class="btn-secondary" onclick="exportThoughtLogManual()" id="exportThoughtLogBtn">
-                📝 导出思考过程
-              </button>
-              <button class="btn-secondary" onclick="openThoughtLogFile()" id="openThoughtLogBtn" style="display:none">
-                📄 打开思考过程
-              </button>
-              <button class="btn-secondary" onclick="goToStep(3)">
-                ← 返回代码面板 / 截图
-              </button>
-              <button class="btn-secondary" onclick="openReportFolder()">
-                📂 打开所在文件夹
-              </button>
-              <button class="btn-ghost" onclick="startNew()">
-                🔄 处理新报告
-              </button>
-            </div>
-          </div>
-        </div>
       </div>
 
       <!-- 历史标签 -->
       <div class="tab-panel" id="tab-history">
         <div class="page-header">
-          <h2>📋 历史记录</h2>
+          <h2><span class="icon icon-md" data-icon="clipboard-list"></span>历史记录</h2>
         </div>
-        <div class="history-list" id="historyList">
-          <div class="empty-state">
-            <span>📭</span>
-            <p>暂无历史记录</p>
-          </div>
-        </div>
+        <div class="history-list" id="historyList"></div>
       </div>
 
       <!-- 设置标签 -->
       <div class="tab-panel" id="tab-settings">
         <div class="page-header">
-          <h2>⚙️ 设置</h2>
+          <h2><span class="icon icon-md" data-icon="settings"></span>设置</h2>
         </div>
-        <div class="settings-container">
-          <!-- 解题模式 -->
-          <div class="settings-card">
-            <h3>🎯 解题模式</h3>
-            <div class="form-group">
-              <label>Agent 运行模式</label>
-              <div class="run-mode-options" id="runModeOptions">
-                <label class="run-mode-option">
-                  <input type="radio" name="runMode" value="standard" checked onchange="onRunModeChange()">
-                  <span>标准模式</span>
-                  <span class="form-hint">生成计划 → 勾选步骤 → 执行</span>
-                </label>
-                <label class="run-mode-option">
-                  <input type="radio" name="runMode" value="deep" onchange="onRunModeChange()">
-                  <span>深度模式</span>
-                  <span class="form-hint">理解+预检+审稿，约 3～4 次调用</span>
-                </label>
-                <label class="run-mode-option">
-                  <input type="radio" name="runMode" value="react" onchange="onRunModeChange()">
-                  <span>ReAct 模式</span>
-                  <span class="form-hint">AI 自主决策工具调用，边看边改</span>
-                </label>
+        <div class="settings-layout">
+          <nav class="settings-nav" role="tablist" aria-label="设置分类">
+            <button type="button" class="settings-nav-item active" role="tab" aria-selected="true" data-settings-pane="settings-pane-runmode" onclick="switchSettingsPane('settings-pane-runmode')">
+              <span class="icon icon-sm" data-icon="target"></span>
+              <span>解题模式</span>
+            </button>
+            <button type="button" class="settings-nav-item" role="tab" aria-selected="false" data-settings-pane="settings-pane-ai" onclick="switchSettingsPane('settings-pane-ai')">
+              <span class="icon icon-sm" data-icon="bot"></span>
+              <span>AI 配置</span>
+            </button>
+            <button type="button" class="settings-nav-item" role="tab" aria-selected="false" data-settings-pane="settings-pane-documents" onclick="switchSettingsPane('settings-pane-documents')">
+              <span class="icon icon-sm" data-icon="scan-text"></span>
+              <span>文档识图</span>
+            </button>
+            <button type="button" class="settings-nav-item" role="tab" aria-selected="false" data-settings-pane="settings-pane-disclaimer" onclick="switchSettingsPane('settings-pane-disclaimer')">
+              <span class="icon icon-sm" data-icon="scroll-text"></span>
+              <span>免责声明</span>
+            </button>
+            <button type="button" class="settings-nav-item" role="tab" aria-selected="false" data-settings-pane="settings-pane-privacy" onclick="switchSettingsPane('settings-pane-privacy')">
+              <span class="icon icon-sm" data-icon="lock"></span>
+              <span>隐私说明</span>
+            </button>
+            <button type="button" class="settings-nav-item" role="tab" aria-selected="false" data-settings-pane="settings-pane-about" onclick="switchSettingsPane('settings-pane-about')">
+              <span class="icon icon-sm" data-icon="info"></span>
+              <span>关于</span>
+            </button>
+          </nav>
+
+          <div class="settings-content">
+            <section class="settings-pane active" id="settings-pane-runmode" role="tabpanel" aria-labelledby="settings-nav-runmode">
+              <div class="settings-card">
+                <h3><span class="icon icon-sm" data-icon="target"></span>解题模式</h3>
+                <p class="form-hint">对外提供<strong>标准</strong>与<strong>深度</strong>两种模式；质量档位（极速/标准/稳妥）独立控制 V4 流水线深度。</p>
+                <div class="form-group">
+                  <label>Agent 运行模式</label>
+                  <div class="run-mode-cards" id="runModeOptions">
+                    <label class="run-mode-card active">
+                      <input type="radio" name="runMode" value="standard" checked onchange="onRunModeChange()">
+                      <span class="run-mode-card-body">
+                        <span class="run-mode-card-title">
+                          <span class="icon icon-sm" data-icon="layout-list"></span>
+                          标准
+                        </span>
+                        <span class="form-hint run-mode-card-hint">生成计划 → 勾选步骤 → V4 流水线执行</span>
+                      </span>
+                    </label>
+                    <label class="run-mode-card">
+                      <input type="radio" name="runMode" value="deep" onchange="onRunModeChange()">
+                      <span class="run-mode-card-body">
+                        <span class="run-mode-card-title">
+                          <span class="icon icon-sm" data-icon="brain"></span>
+                          深度
+                        </span>
+                        <span class="form-hint run-mode-card-hint">理解 + 审稿修订 + 同上执行尾段，约 3～4 次 LLM</span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-group settings-advanced-block">
+                  <label>
+                    <input type="checkbox" id="experimentalReactModeSettings" onchange="onExperimentalReactChange()">
+                    实验：自主选题模式 (ReAct)
+                  </label>
+                  <span class="form-hint">默认隐藏。启用后可选 ReAct：先跑 V4 流水线，再由 AI 补 UML / 交付；API 仍接受 <code>run_mode=react</code></span>
+                  <div class="run-mode-cards is-hidden" id="experimentalReactCard">
+                    <label class="run-mode-card">
+                      <input type="radio" name="runMode" value="react" onchange="onRunModeChange()">
+                      <span class="run-mode-card-body">
+                        <span class="run-mode-card-title">
+                          <span class="icon icon-sm" data-icon="sparkles"></span>
+                          ReAct（实验）
+                        </span>
+                        <span class="form-hint run-mode-card-hint">Pipeline 优先解题 + AI 补跑收尾工具</span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
               </div>
-            </div>
-          </div>
-
-          <!-- AI配置 -->
-          <div class="settings-card">
-            <h3>🤖 AI 配置</h3>
-            <div class="form-group">
-              <label>AI 提供商</label>
-              <select class="form-select" id="aiProvider" onchange="onProviderChange()">
-                <option value="deepseek">DeepSeek（推荐，便宜）</option>
-                <option value="openai">OpenAI (GPT-4)</option>
-                <option value="claude">Anthropic (Claude)</option>
-                <option value="zhipu">智谱AI (GLM-4)</option>
-                <option value="custom">自定义API</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>API Key</label>
-              <div class="input-with-btn">
-                <input type="password" class="form-input" id="apiKey" placeholder="sk-..." />
-                <button class="btn-ghost" onclick="toggleApiKeyVisibility()">👁</button>
+              <div class="settings-card">
+                <h3><span class="icon icon-sm" data-icon="ruler"></span>解题质量档位</h3>
+                <p class="form-hint">控制 V4 流水线深度：修复轮次、内化验证与图表阶段（与运行模式独立）</p>
+                <div class="form-group">
+                  <div class="run-mode-cards" id="solveQualityTierOptions">
+                    <label class="run-mode-card">
+                      <input type="radio" name="solveQualityTier" value="fast" onchange="onSolveQualityTierChange()">
+                      <span class="run-mode-card-body">
+                        <span class="run-mode-card-title">
+                          <span class="icon icon-sm" data-icon="zap"></span>
+                          极速
+                        </span>
+                        <span class="form-hint run-mode-card-hint">少修复、跳过内化验证与图表，约 2 次 LLM</span>
+                      </span>
+                    </label>
+                    <label class="run-mode-card active">
+                      <input type="radio" name="solveQualityTier" value="standard" checked onchange="onSolveQualityTierChange()">
+                      <span class="run-mode-card-body">
+                        <span class="run-mode-card-title">
+                          <span class="icon icon-sm" data-icon="settings"></span>
+                          标准
+                        </span>
+                        <span class="form-hint run-mode-card-hint">默认平衡：内化验证 + 适量修复</span>
+                      </span>
+                    </label>
+                    <label class="run-mode-card">
+                      <input type="radio" name="solveQualityTier" value="thorough" onchange="onSolveQualityTierChange()">
+                      <span class="run-mode-card-body">
+                        <span class="run-mode-card-title">
+                          <span class="icon icon-sm" data-icon="check-circle"></span>
+                          稳妥
+                        </span>
+                        <span class="form-hint run-mode-card-hint">多轮修复 + 同错重生，可含图表阶段</span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
               </div>
-              <span class="form-hint" id="apiKeyHint">DeepSeek API Key，在 platform.deepseek.com 获取</span>
-              <div class="key-storage-notice" id="keyStorageNotice" role="note">
-                <strong>Key 存于本机</strong>
-                <span>经操作系统加密（safeStorage）后保存在本机，不会上传至软件作者服务器；调用 AI 时经 HTTPS 发送至您选择的厂商。请勿在公共或共享电脑上保存 Key。</span>
+            </section>
+
+            <section class="settings-pane" id="settings-pane-ai" role="tabpanel" hidden>
+              <div class="settings-card">
+                <h3><span class="icon icon-sm" data-icon="bot"></span>AI 配置</h3>
+                <div class="form-group">
+                  <label>AI 提供商</label>
+                  <select class="form-select" id="aiProvider" onchange="onProviderChange()">
+                    <option value="deepseek">DeepSeek（推荐，便宜）</option>
+                    <option value="openai">OpenAI (GPT-4)</option>
+                    <option value="claude">Anthropic (Claude)</option>
+                    <option value="zhipu">智谱AI (GLM-4)</option>
+                    <option value="custom">自定义API</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>API Key</label>
+                  <div class="input-with-btn">
+                    <input type="password" class="form-input" id="apiKey" placeholder="sk-..." />
+                    <button class="btn-ghost" type="button" onclick="toggleApiKeyVisibility()" aria-label="显示或隐藏 API Key"><span class="icon icon-sm" data-icon="eye" id="apiKeyToggleIcon"></span></button>
+                  </div>
+                  <span class="form-hint" id="apiKeyHint">DeepSeek API Key，在 platform.deepseek.com 获取</span>
+                  <div class="key-storage-notice" id="keyStorageNotice" role="note">
+                    <strong>Key 存于本机</strong>
+                    <span>经操作系统加密（safeStorage）后保存在本机，不会上传至软件作者服务器；调用 AI 时经 HTTPS 发送至您选择的厂商。请勿在公共或共享电脑上保存 Key。</span>
+                  </div>
+                </div>
+                <div class="form-group is-hidden" id="customUrlGroup">
+                  <label>自定义API地址</label>
+                  <input type="text" class="form-input" id="customUrl" placeholder="https://your-api.com/v1" />
+                </div>
+                <div class="form-group">
+                  <label>模型</label>
+                  <select class="form-select" id="modelSelect">
+                    <option value="deepseek-chat">deepseek-chat（推荐）</option>
+                    <option value="deepseek-reasoner">deepseek-reasoner（推理增强）</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="umlAllowOnlineSettings" checked onchange="onUmlSettingsChange()">
+                    UML 允许在线渲染（PlantUML 官方服务，无本地 Java 时使用）
+                  </label>
+                </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="showThoughtTraceSettings" onchange="onShowThoughtTraceChange()">
+                    显示思考过程侧栏（标准模式也可开启）
+                  </label>
+                  <span class="form-hint">深度模式默认展示；勾选后标准模式执行时也显示 SSE 思考/预检/审稿</span>
+                </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="optimizePlanFromUsageSettings">
+                    根据使用习惯优化计划建议（本地）
+                  </label>
+                  <span class="form-hint">多次取消某步骤后，下次计划默认不勾选该步；数据仅存本机</span>
+                </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="autoRemediateSettings">
+                    校验未通过时自动修复一次（消耗 Token）
+                  </label>
+                  <span class="form-hint">verify 失败后按建议局部重跑并再校验（最多 1 轮）</span>
+                </div>
+                <div class="form-group settings-advanced-block" id="skillCandidatesPanel">
+                  <h4 class="settings-subheading">技能候选（半自动 promote）</h4>
+                  <p class="form-hint">运行中重复出现的错误分类 / notes 会写入本地 skill_candidates.json；确认后可一键注册为技能。</p>
+                  <div id="skillCandidatesList" class="skill-candidates-list" role="list"></div>
+                  <button type="button" class="btn-secondary btn-sm" id="skillCandidatesRefreshBtn" onclick="refreshSkillCandidates()">刷新候选</button>
+                </div>
+                <div class="form-group">
+                  <label>解题语言</label>
+                  <select class="form-select" id="codeLanguage">
+                    <option value="python">Python</option>
+                    <option value="c">C语言</option>
+                    <option value="cpp">C++</option>
+                    <option value="java">Java</option>
+                    <option value="javascript">JavaScript</option>
+                  </select>
+                </div>
+                <button class="btn-primary" onclick="saveSettings()">保存设置</button>
+                <button class="btn-secondary" onclick="testConnection()">测试连接</button>
+                <div id="testResult" class="test-result"></div>
               </div>
-            </div>
-            <div class="form-group" id="customUrlGroup" style="display:none">
-              <label>自定义API地址</label>
-              <input type="text" class="form-input" id="customUrl" placeholder="https://your-api.com/v1" />
-            </div>
-            <div class="form-group">
-              <label>模型</label>
-              <select class="form-select" id="modelSelect">
-                <option value="deepseek-chat">deepseek-chat（推荐）</option>
-                <option value="deepseek-reasoner">deepseek-reasoner（推理增强）</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>截图窗口样式</label>
-              <select class="form-select" id="screenshotChromeSettings" onchange="syncScreenshotChrome(this.value)">
-                <option value="windows">Windows（默认）</option>
-                <option value="mac">macOS</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>截图布局</label>
-              <select class="form-select" id="screenshotLayoutSettings" onchange="onScreenshotLayoutChange()">
-                <option value="full" selected>完整 VS Code 窗口（推荐）</option>
-                <option value="compact">仅编辑区+终端</option>
-              </select>
-            </div>
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="umlAllowOnlineSettings" checked onchange="onUmlSettingsChange()">
-                UML 允许在线渲染（PlantUML 官方服务，无本地 Java 时使用）
-              </label>
-            </div>
-            <div class="form-group">
-              <label>终端类型（截图里的提示符）</label>
-              <select class="form-select" id="terminalProfileSettings" onchange="onTerminalSettingsChange()">
-                <option value="win_powershell">Windows PowerShell</option>
-                <option value="win_cmd">Windows CMD</option>
-                <option value="win_gitbash">Git Bash (MINGW)</option>
-                <option value="mac_zsh">macOS zsh</option>
-                <option value="mac_bash">macOS bash</option>
-                <option value="mac_ps">macOS PowerShell</option>
-                <option value="custom">自定义提示符</option>
-              </select>
-              <span class="form-hint">选和你 VS Code 终端里一致的样式，截图更像本人电脑</span>
-            </div>
-            <div class="form-group">
-              <label>终端工作目录（可选）</label>
-              <input type="text" class="form-input" id="terminalCwdSettings" placeholder="如 C:\Users\你的用户名\Desktop\实验" oninput="onTerminalSettingsChange()" />
-            </div>
-            <div class="form-group" id="terminalCustomGroup" style="display:none">
-              <label>自定义提示符</label>
-              <input type="text" class="form-input" id="terminalCustomSettings" placeholder="如 PS D:\homework&gt; " oninput="onTerminalSettingsChange()" />
-            </div>
-            <div class="form-group">
-              <button type="button" class="btn-secondary" onclick="collectTerminalEnv()">🔍 一键采集终端环境</button>
-              <span class="form-hint" style="display:block;margin-top:8px" id="terminalCollectHint">从 Cursor/VS Code 设置与本机路径自动读取</span>
-            </div>
-            <div class="form-group">
-              <span class="form-hint" id="terminalPreviewHint">预览：PS C:\Users\Student\Desktop\lab&gt; python main.py</span>
-            </div>
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="showThoughtTraceSettings" onchange="onShowThoughtTraceChange()">
-                显示思考过程侧栏（标准模式也可开启）
-              </label>
-              <span class="form-hint">深度模式默认展示；勾选后标准模式执行时也显示 SSE 思考/预检/审稿</span>
-            </div>
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="optimizePlanFromUsageSettings">
-                根据使用习惯优化计划建议（本地）
-              </label>
-              <span class="form-hint">多次取消某步骤后，下次计划默认不勾选该步；数据仅存本机</span>
-            </div>
-            <div class="form-group">
-              <label>
-                <input type="checkbox" id="autoRemediateSettings">
-                校验未通过时自动修复一次（消耗 Token）
-              </label>
-              <span class="form-hint">verify 失败后按建议局部重跑并再校验（最多 1 轮）</span>
-            </div>
-            <div class="form-group">
-              <label>解题语言</label>
-              <select class="form-select" id="codeLanguage">
-                <option value="python">Python</option>
-                <option value="c">C语言</option>
-                <option value="cpp">C++</option>
-                <option value="java">Java</option>
-                <option value="javascript">JavaScript</option>
-              </select>
-            </div>
-            <button class="btn-primary" onclick="saveSettings()">保存设置</button>
-            <button class="btn-secondary" onclick="testConnection()">测试连接</button>
-            <div id="testResult" class="test-result"></div>
-          </div>
+            </section>
 
-          <!-- 合规 -->
-          <div class="settings-card" id="complianceSettingsCard">
-            <h3>📜 免责声明</h3>
-            <div class="compliance-prose" id="complianceDisclaimerText"></div>
-            <button type="button" class="btn-secondary btn-sm" onclick="showDisclaimerModal(false)">再次查看</button>
-          </div>
+            <section class="settings-pane" id="settings-pane-documents" role="tabpanel" hidden>
+              <div class="settings-card">
+                <h3><span class="icon icon-sm" data-icon="scan-text"></span>图片识题（本地 OCR）</h3>
+                <p class="form-hint settings-ocr-intro">
+                  识别 Word 嵌入图、扫描件中的<strong>打印体文字</strong>，合并进题干供 Planner 使用；不能理解电路图等图形结构。
+                </p>
+                <div class="ocr-status-notice is-hidden" id="ocrUnavailableNotice" role="note">
+                  <div class="ocr-status-notice-head">
+                    <span class="icon icon-sm" data-icon="alert-triangle"></span>
+                    <span id="ocrUnavailableSummary">本机未检测到 Tesseract，无法使用本地 OCR。</span>
+                  </div>
+                  <ol class="ocr-install-steps" id="ocrInstallSteps"></ol>
+                  <div class="ocr-status-notice-actions" id="ocrInstallActions"></div>
+                  <p class="ocr-install-alt-hint" id="ocrInstallAltHint"></p>
+                </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="enableImageOcrSettings" onchange="onImageOcrSettingsChange()">
+                    识别图片中的文字（本地 OCR）
+                  </label>
+                  <span class="form-hint">开启后对 docx 嵌入图执行 OCR；正文极短时也会自动尝试识别题目图</span>
+                </div>
+                <div class="form-group">
+                  <label for="imageOcrLangSettings">OCR 语言</label>
+                  <select class="form-select" id="imageOcrLangSettings" onchange="onImageOcrSettingsChange()">
+                    <option value="chi_sim+eng">中文 + 英文（推荐）</option>
+                    <option value="chi_sim">仅中文</option>
+                    <option value="eng">仅英文</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="imageOcrMaxPagesSettings">单份文档 OCR 页/图上限</label>
+                  <input type="number" class="form-input" id="imageOcrMaxPagesSettings" min="1" max="100" value="20"
+                    onchange="onImageOcrSettingsChange()">
+                  <span class="form-hint">防止超大文档滥用本地 OCR</span>
+                </div>
+                <div class="form-group">
+                  <label for="imageVisionMaxPagesSettings">Vision 识图张数上限</label>
+                  <input type="number" class="form-input" id="imageVisionMaxPagesSettings" min="1" max="20" value="5"
+                    onchange="onImageOcrSettingsChange()">
+                  <span class="form-hint">混合/仅 Vision 模式下单次 parse 最多调用 Vision 的张数</span>
+                </div>
+                <div class="form-group">
+                  <label for="imageReadingModeSettings">识图模式</label>
+                  <select class="form-select" id="imageReadingModeSettings" onchange="onImageOcrSettingsChange()">
+                    <option value="ocr_only">仅 OCR（本地，推荐）</option>
+                    <option value="hybrid">混合（OCR 不足时 Vision 补全）</option>
+                    <option value="vision">仅 Vision（需多模态 API）</option>
+                  </select>
+                </div>
+              </div>
+            </section>
 
-          <div class="settings-card">
-            <h3>🔒 隐私说明</h3>
-            <div class="compliance-prose" id="compliancePrivacyText"></div>
-            <p class="form-hint">日志路径：<code id="complianceLogPath">—</code></p>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-              <button type="button" class="btn-secondary btn-sm" onclick="showPrivacyModal()">查看完整说明</button>
-              <button type="button" class="btn-secondary btn-sm" onclick="openLogFolder()">打开日志目录</button>
-              <button type="button" class="btn-secondary btn-sm" onclick="showOnboardingModal()">使用引导</button>
-            </div>
-          </div>
+            <section class="settings-pane" id="settings-pane-disclaimer" role="tabpanel" hidden>
+              <div class="settings-card" id="complianceSettingsCard">
+                <h3><span class="icon icon-sm" data-icon="scroll-text"></span>免责声明</h3>
+                <div class="compliance-prose" id="complianceDisclaimerText"></div>
+                <button type="button" class="btn-secondary btn-sm" onclick="showDisclaimerModal(false)">再次查看</button>
+              </div>
+            </section>
 
-          <!-- 关于 -->
-          <div class="settings-card">
-            <h3>ℹ️ 关于</h3>
-            <p class="about-text">解题能手 v1.0 — AI驱动的实验报告助手</p>
-            <p class="about-text">标准模式：生成计划 → 勾选步骤 → 执行；深度模式：预检+审稿；ReAct 模式：AI 自主决策。</p>
-            <p class="about-text">支持编程题自动解题、代码执行、截图、报告填充。</p>
-            <p class="about-text about-warn">⚠️ 本工具仅用于学习辅助，请勿用于作弊。提交前请阅读免责声明。</p>
+            <section class="settings-pane" id="settings-pane-privacy" role="tabpanel" hidden>
+              <div class="settings-card">
+                <h3><span class="icon icon-sm" data-icon="lock"></span>隐私说明</h3>
+                <div class="compliance-prose" id="compliancePrivacyText"></div>
+                <p class="form-hint">日志路径：<code id="complianceLogPath">—</code></p>
+                <div class="settings-action-row">
+                  <button type="button" class="btn-secondary btn-sm" onclick="showPrivacyModal()">查看完整说明</button>
+                  <button type="button" class="btn-secondary btn-sm" onclick="openLogFolder()">打开日志目录</button>
+                  <button type="button" class="btn-secondary btn-sm" onclick="showOnboardingModal()">使用引导</button>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-pane" id="settings-pane-about" role="tabpanel" hidden>
+              <div class="settings-card">
+                <h3><span class="icon icon-sm" data-icon="info"></span>关于</h3>
+                <p class="about-text">解题能手 v1.0 — AI驱动的实验报告助手</p>
+                <p class="about-text">标准：计划 → 勾选 → V4 执行；深度：理解 + 审稿 + 同上；ReAct 为实验选项（设置 → 解题模式 → 高级）。</p>
+                <p class="about-text">支持编程题自动解题、代码执行、报告填充。</p>
+                <p class="about-text about-warn"><span class="icon icon-sm" data-icon="alert-triangle"></span>本工具仅用于学习辅助，请勿用于作弊。提交前请阅读免责声明。</p>
+              </div>
+            </section>
           </div>
         </div>
       </div>
@@ -744,9 +988,16 @@
   <!-- 加载遮罩 -->
   <div class="loading-overlay" id="loadingOverlay">
     <div class="loading-card">
-      <div class="loading-spinner"></div>
+      <div class="loading-brand">
+        <div class="loading-spinner" aria-hidden="true"></div>
+        <div class="loading-skeleton" aria-hidden="true">
+          <div class="loading-skeleton-bar"></div>
+          <div class="loading-skeleton-bar"></div>
+          <div class="loading-skeleton-bar"></div>
+        </div>
+      </div>
       <h3>解题能手启动中</h3>
-      <p id="loadingStatus">正在初始化AI引擎...</p>
+      <p id="loadingStatus">正在连接后端…</p>
     </div>
   </div>
 
@@ -755,7 +1006,7 @@
     <div class="compliance-modal" role="dialog" aria-labelledby="complianceModalTitle">
       <h3 id="complianceModalTitle"></h3>
       <div class="compliance-modal-body" id="complianceModalBody"></div>
-      <label class="compliance-modal-check" id="complianceModalCheckWrap" style="display:none">
+      <label class="compliance-modal-check is-hidden" id="complianceModalCheckWrap">
         <input type="checkbox" id="complianceModalCheck">
         <span>我已阅读并理解</span>
       </label>
@@ -767,9 +1018,9 @@
   </div>
 
   <!-- 粘贴题目模态框 -->
-  <div class="revise-feedback-overlay paste-assignment-overlay" id="pasteAssignmentModal" style="display:none">
+  <div class="revise-feedback-overlay paste-assignment-overlay is-hidden" id="pasteAssignmentModal">
     <div class="revise-feedback-dialog paste-assignment-dialog">
-      <h3>📋 粘贴题目 / 要求</h3>
+      <h3><span class="icon icon-sm" data-icon="clipboard-list"></span>粘贴题目 / 要求</h3>
       <p class="form-hint">从超星、慕课等平台复制作业说明，粘贴到下方。角色默认为「题目 / 要求」，可与空白实验报告模板一起解析。</p>
       <label class="config-label" for="pasteAssignmentRole">文档角色</label>
       <select class="lang-select-big" id="pasteAssignmentRole">
@@ -786,9 +1037,9 @@
   </div>
 
   <!-- 修订反馈模态框 -->
-  <div class="revise-feedback-overlay" id="reviseFeedbackModal" style="display:none">
+  <div class="revise-feedback-overlay is-hidden" id="reviseFeedbackModal">
     <div class="revise-feedback-dialog">
-      <h3>✏️ 修订反馈</h3>
+      <h3><span class="icon icon-sm" data-icon="pencil"></span>修订反馈</h3>
       <p class="form-hint">请描述哪里需要改进，或直接提交使用默认反馈</p>
       <textarea class="form-input revise-feedback-text" id="reviseFeedbackText" rows="4"></textarea>
       <div class="revise-feedback-actions">
@@ -801,6 +1052,7 @@
   <!-- Toast通知 -->
   <div class="toast-container" id="toastContainer"></div>
 
+  <script src="icons.js"></script>
   <script src="compliance-ux.js"></script>
   <script src="app.js"></script>
 </body>

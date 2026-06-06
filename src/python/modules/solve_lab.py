@@ -17,6 +17,8 @@ def solve_lab(
     settings=None,
     user_constraints=None,
     on_phase=None,
+    on_jar_consent=None,
+    approved_jar_ids=None,
     tier="standard",
 ):
     """Solve lab report; dispatches to V4 pipeline when enabled."""
@@ -37,8 +39,17 @@ def solve_lab(
             tier=tier,
             user_constraints=user_constraints,
             on_phase=on_phase,
+            on_jar_consent=on_jar_consent,
+            approved_jar_ids=approved_jar_ids,
         )
 
+    from log_util import logi
+
+    logi(
+        "solve_lab",
+        "DEPRECATED: solve_pipeline v1 (LAB_REPORT_USER 单轮) — 默认已 v4；"
+        "请移除 solvePipelineVersion=v1 或 SOLVE_PIPELINE=v1",
+    )
     from llm_client import call_ai
 
     return call_ai(

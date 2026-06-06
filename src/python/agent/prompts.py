@@ -169,7 +169,6 @@ PLANNER_USER = """你是一名大学实验报告解题助手。根据【实验�
 
 【用户画像默认值】（仅用于 params 默认，不得单独新增无报告依据的步骤）
 - 默认编程语言: {default_language}
-- 默认截图风格: {screenshot_style}（ide 或 terminal）
 - 倾向 UML: {prefer_uml}
 
 【报告元数据】（若有）
@@ -178,14 +177,17 @@ PLANNER_USER = """你是一名大学实验报告解题助手。根据【实验�
 【实验报告全文】
 {report_text}
 
+{v4_block}{behavior_block}
 【规则】
 1. 每个步骤必须含 module、params、reason、evidence、source、confidence、default_checked。
 2. evidence 必须是报告原文中的短引文片段；无依据的步骤不要加入。
 3. 用户画像只能影响 params（如 language、include_uml），不能因画像单独增加步骤。
-4. 纯理论/无代码要求时可用 solve_theory，勿强行 run_code。
-5. 默认计划末尾含 present_deliverable（汇编答案供用户复制）；仅当用户明确要求写回 Word 时才含 fill_report。
-6. 对 confidence 为 medium/low 且用户可能混淆的步骤，在 clarifications 中生成问答（含 options.affects 模块 ID）。
-7. fill_scope 为 skip / user_provided 的节不要安排 solve_lab 覆盖该节内容。
+4. 纯理论/无代码关键词时优先 solve_theory 或仅 solve_lab，**禁止** run_code / render_uml。
+5. V4 开启时 solve_lab 已含内化沙箱验证（run_code_sandbox）；勿默认加入 run_code（仅高级复验可选，default_checked=false）。
+6. 用户约束含 skip_validation 时，**禁止**插入 run_code。
+7. 默认计划末尾含 present_deliverable（汇编答案供用户复制）；仅当用户明确要求写回 Word 时才含 fill_report。
+8. confidence 为 low 的步骤：default_checked=false，reason 须写清为何不确定；并在 clarifications 附 default_reason 引用该 reason。
+9. fill_scope 为 skip / user_provided 的节不要安排 solve_lab 覆盖该节内容。
 
 【分节设置】（若有）
 {sections_block}
@@ -211,7 +213,7 @@ PLANNER_USER = """你是一名大学实验报告解题助手。根据【实验�
     {{
       "id": "q1",
       "question": "…",
-      "options": [{{ "label": "…", "affects": ["screenshot_ide"] }}],
+      "options": [{{ "label": "…", "affects": ["render_uml"] }}],
       "default": "…",
       "default_reason": "…"
     }}
@@ -230,7 +232,7 @@ UNDERSTAND_PLAN_USER = """你是实验报告解题规划专家。先**理解**�
 【可用模块】
 {module_catalog}
 
-【用户画像】语言={default_language}，截图={screenshot_style}，UML倾向={prefer_uml}
+【用户画像】语言={default_language}，UML倾向={prefer_uml}
 【分节设置】
 {sections_block}
 
@@ -323,6 +325,27 @@ CODE_ONLY_USER = """你是一名大学课程助教。请**只生成可运行源�
 - 单文件优先；多文件仅当题目明确要求多类/多模块
 - 命令行可运行，禁止 Servlet/JSP/Web 服务器阻塞模式
 - println/print 输出只用中文和 ASCII，禁止 emoji
+"""
+
+SOLVE_DIAGRAMS_USER = """根据实验要求与已验证代码结构，**只生成设计图**（不要报告文字字段）。
+
+【题目摘要】
+{task_summary}
+
+【代码结构摘要（类名/方法名）】
+{code_summary}
+
+【报告相关段落】
+{report_excerpt}
+
+只输出 JSON（不要其它文字）：
+```json
+{{
+  "diagrams": []
+}}
+```
+
+{uml_rules}
 """
 
 WRITE_REPORT_TEXT_USER = """根据已生成代码与（若有）实际运行输出，撰写实验报告文字字段。只输出 JSON：
@@ -423,6 +446,9 @@ def render_plan_prompt(
     module_catalog: list[str] | None = None,
     sections_block: str = "",
     format_spec: dict | None = None,
+    *,
+    v4_pipeline: bool = False,
+    skip_validation: bool = False,
 ) -> str:
     from agent.template_analyzer import to_format_constraints
 
@@ -433,31 +459,44 @@ def render_plan_prompt(
         "solve_lab",
         "solve_theory",
         "run_code",
-        "screenshot_ide",
-        "screenshot_terminal",
         "render_uml",
         "present_deliverable",
     ]
     fmt = to_format_constraints(format_spec)
+    v4_lines: list[str] = []
+    if v4_pipeline:
+        v4_lines.append(
+            "【V4 流水线】solve_lab 已内含读题对齐、写代码、内化沙箱验证与写报告；"
+            "默认勿加入 run_code（仅高级复验可选）。"
+        )
+    if skip_validation:
+        v4_lines.append("【用户约束 skip_validation】禁止插入 run_code。")
+    v4_block = "\n".join(v4_lines)
+    if v4_block:
+        v4_block += "\n"
+    from agent.user_profile import behavior_hints_block
+
+    behavior_block = behavior_hints_block(profile)
     return PROMPTS["planner"].render(
         report_text=report_text,
         module_catalog=", ".join(catalog),
         default_language=profile.get("default_language", "java"),
-        screenshot_style=profile.get("screenshot_style", "ide"),
         prefer_uml="是" if profile.get("prefer_uml") else "否",
         metadata_block=metadata_block,
         sections_block=sections_block or "（无）",
         format_block=fmt or "（无）",
+        v4_block=v4_block,
+        behavior_block=behavior_block,
     )
 
 
 PROMPTS: dict[str, PromptTemplate] = {
     "planner": PromptTemplate(
         name="planner",
-        version="1.2.0",
+        version="1.4.0",
         user_template=PLANNER_USER,
         output_schema="plan_json_v1",
-        changelog="Phase 2b B4: format_spec block in planner",
+        changelog="AO-9: C2 behavior_hints_block from failure_modules",
     ),
     "section_brief": PromptTemplate(
         name="section_brief",
@@ -510,6 +549,12 @@ PROMPTS: dict[str, PromptTemplate] = {
         version="1.0.0",
         user_template=WRITE_REPORT_TEXT_USER,
         changelog="V5-1 / V4 Phase 2: report text from verified stdout",
+    ),
+    "solve_diagrams": PromptTemplate(
+        name="solve_diagrams",
+        version="1.0.0",
+        user_template=SOLVE_DIAGRAMS_USER,
+        changelog="AO-11 / V4 Phase 3: diagrams decoupled from code generation",
     ),
     "fix_code": PromptTemplate(
         name="fix_code",
@@ -632,6 +677,23 @@ def render_code_only_prompt(
         constraints_block=constraints_block or "",
         format_constraints=("\n" + fmt) if fmt else "",
         env_section=_build_env_section(language),
+    )
+
+
+def render_solve_diagrams_prompt(
+    *,
+    task_summary: str,
+    code_summary: str,
+    report_excerpt: str,
+) -> str:
+    from agent.prompt_budget import fit_budget
+
+    excerpt = fit_budget(report_excerpt or "", budget_tokens=1500, preserve_sections=["类图", "UML", "设计"])
+    return PROMPTS["solve_diagrams"].render(
+        task_summary=(task_summary or "")[:600],
+        code_summary=(code_summary or "")[:2000],
+        report_excerpt=excerpt,
+        uml_rules=LAB_REPORT_UML_APPEND.strip(),
     )
 
 

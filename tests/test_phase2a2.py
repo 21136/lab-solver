@@ -148,7 +148,7 @@ def test_multi_doc_context():
     assert "实验步骤" in ctx["planner_input_text"]
 
 
-def test_replan_clarify_screenshot():
+def test_replan_clarify_uml():
     steps = [
         {
             "module": "solve_lab",
@@ -157,28 +157,22 @@ def test_replan_clarify_screenshot():
             "confidence": "high",
         },
         {
-            "module": "screenshot_ide",
+            "module": "render_uml",
             "params": {},
             "default_checked": True,
             "confidence": "medium",
         },
-        {
-            "module": "screenshot_terminal",
-            "params": {},
-            "default_checked": False,
-            "confidence": "medium",
-        },
     ]
     ctx = {
-        "report_text": "需要截图",
+        "report_text": "需要类图",
         "document_ids": [],
         "plan": {"steps": steps},
         "decision_log": [],
         "user_profile": {},
     }
-    plan = replan_with_answers(ctx, {"q_screenshot": "仅终端"})
+    plan = replan_with_answers(ctx, {"q_uml": "不需要"})
     mods = [s["module"] for s in plan["steps"]]
-    assert "screenshot_terminal" in mods or "screenshot_ide" not in mods
+    assert "render_uml" not in mods
 
 
 def main():
@@ -187,7 +181,7 @@ def main():
     test_fingerprint_sections_and_split()
     test_parse_inline_text_with_fill_target()
     test_multi_doc_context()
-    test_replan_clarify_screenshot()
+    test_replan_clarify_uml()
     print("test_phase2a2: OK")
 
 

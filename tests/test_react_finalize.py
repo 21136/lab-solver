@@ -7,7 +7,8 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
-from agent.react_finalize import react_finalize_pipeline, _should_render_uml
+from agent.orchestrator import _should_render_uml
+from agent.react_finalize import react_finalize_pipeline
 
 
 def test_should_render_uml_when_diagrams_present():
@@ -48,19 +49,17 @@ def test_finalize_runs_missing_steps():
     }
     steps = [
         {"module": "render_uml", "default_checked": True},
-        {"module": "screenshot_terminal", "default_checked": True},
         {"module": "fill_report", "default_checked": True},
     ]
 
     mocks = {
         "render_uml": lambda c, p: {"ok": True, "data": {"images_b64": ["aW1n"]}},
-        "screenshot_terminal": lambda c, p: {"ok": True, "data": {"images_b64": ["aW1n"]}},
         "fill_report": lambda c, p: {"ok": True, "data": {"output_path": "/tmp/out.docx"}},
     }
     with patch.dict("agent.executor._MODULE_RUNNERS", mocks, clear=False):
         cycles = react_finalize_pipeline("t1", ctx, steps, max_rounds=12)
 
-    assert len(cycles) == 3
+    assert len(cycles) == 2
     assert all(c.get("finalize") for c in cycles)
     assert ctx["module_results"]["render_uml"]["ok"]
     assert ctx["module_results"]["fill_report"]["ok"]

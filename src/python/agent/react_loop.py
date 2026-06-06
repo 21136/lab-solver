@@ -23,6 +23,8 @@ from agent.react_tools import (
     execute_tool,
     tool_to_module,
 )
+
+_BOOTSTRAP_THOUGHT = "V4 流水线优先解题（bootstrap）"
 from agent.run_control import emit_event, is_cancelled, release_run
 from llm_client import chat_messages
 from log_util import loge, logi
@@ -110,6 +112,84 @@ def parse_react_response(content: str) -> dict[str, Any]:
 _parse_react_response = parse_react_response
 
 
+def _solve_lab_checked(steps: list) -> bool:
+    for step in steps:
+        if step.get("module") == "solve_lab":
+            return step.get("default_checked", True) is not False
+    return True
+
+
+def _bootstrap_solve_lab_pipeline(
+    run_id: str,
+    ctx: dict,
+    steps: list,
+    *,
+    thought_history: list[dict[str, Any]],
+) -> bool:
+    """AO-7: Run V4 solve_lab before ReAct LLM loop when not already done."""
+    results = ctx.get("module_results") or {}
+    if (results.get("solve_lab") or {}).get("ok"):
+        return True
+    if not _solve_lab_checked(steps):
+        return False
+
+    append_decision(
+        ctx,
+        agent="react_loop",
+        decision="bootstrap_solve_lab",
+        target="solve_lab",
+        reason="AO-7 pipeline-first: V4 solve before ReAct LLM",
+    )
+
+    profile = ctx.get("user_profile") or {}
+    params: dict[str, Any] = {}
+    lang = profile.get("default_language")
+    if lang:
+        params["language"] = lang
+    settings = ctx.get("settings") or {}
+    if profile.get("prefer_uml") or settings.get("include_uml"):
+        params["include_uml"] = True
+
+    tool_result = execute_tool(ctx, "solve_lab", params)
+    ok = bool(tool_result.get("ok"))
+    summary = tool_result.get("result_summary") or ""
+
+    emit_react_cycle(run_id, 0, MAX_REACT_ROUNDS, _BOOTSTRAP_THOUGHT, "solve_lab", ok, summary)
+    thought_history.append(
+        {
+            "round": 0,
+            "max_rounds": MAX_REACT_ROUNDS,
+            "thought": _BOOTSTRAP_THOUGHT,
+            "action": "solve_lab",
+            "params": params,
+            "result_ok": ok,
+            "result_summary": summary,
+            "bootstrap": True,
+        }
+    )
+
+    solve_mr = (ctx.get("module_results") or {}).get("solve_lab") or {}
+    solve_data = solve_mr.get("data") or {}
+    meta = solve_data.get("pipeline_meta") or ctx.get("pipeline_meta")
+    if meta:
+        ctx["pipeline_meta"] = meta
+    if solve_data.get("solve_session"):
+        ctx["solve_session"] = solve_data["solve_session"]
+
+    return ok
+
+
+def _bootstrap_user_note(ctx: dict) -> str:
+    solve_ok = bool((ctx.get("module_results") or {}).get("solve_lab", {}).get("ok"))
+    if not solve_ok:
+        return "请开始解题。若 solve_lab 失败可重试一次，否则输出 action: done。"
+    return (
+        "【系统】solve_lab（V4 流水线）已自动完成。"
+        "请根据计划补跑 render_uml / present_deliverable / finalize_report，"
+        "或输出 action: done。勿重复 solve_lab，除非解题明显失败。"
+    )
+
+
 def run_react_loop(
     run_id: str,
     ctx: dict,
@@ -151,6 +231,10 @@ def run_react_loop(
     }
     mode_note = _MODE_GUIDANCE.get(output_mode, _MODE_GUIDANCE["deliverable"])
 
+    thought_history: list[dict[str, Any]] = []
+    _bootstrap_solve_lab_pipeline(run_id, ctx, steps, thought_history=thought_history)
+    bootstrap_note = _bootstrap_user_note(ctx)
+
     history: list[dict] = [
         {"role": "system", "content": system_msg},
         {
@@ -158,7 +242,7 @@ def run_react_loop(
             "content": (
                 f"【实验报告全文】\n{budgeted_report}\n\n"
                 f"【输出模式】{mode_note}\n\n"
-                "请开始解题。先调用 solve_lab 生成答案。"
+                f"{bootstrap_note}"
             ),
         },
     ]
@@ -167,7 +251,6 @@ def run_react_loop(
     empty_retries = 0
     run_code_failures = 0
     last_action = ""
-    thought_history: list[dict[str, Any]] = []
 
     def _emit(ev: dict):
         emit_event(run_id, ev)
@@ -178,6 +261,7 @@ def run_react_loop(
         _emit({"type": "decision", **entry})
 
     orch = RunOrchestrator(run_id, ctx, emit=_emit, on_decision=on_decision)
+    ctx["_orchestrator"] = orch
 
     append_decision(
         ctx,
@@ -254,7 +338,7 @@ def run_react_loop(
                     break
                 hint = (
                     "你已经连续多轮未输出有效 ACTION。如果认为任务已完成请输出 ACTION: done。"
-                    "如果需要继续，请选择: solve_lab / run_code / screenshot / fill_report / render_uml / done。"
+                    "如果需要继续，请选择: solve_lab / run_code / fill_report / render_uml / done。"
                 )
                 history.append({"role": "user", "content": f"[系统提示]\n{hint}"})
                 empty_retries = 0
@@ -290,18 +374,25 @@ def run_react_loop(
             if action in ("run_code", "fix_code"):
                 run_code_failures += 1
             if run_code_failures >= MAX_RUN_CODE_FIX_CYCLES and action in ("run_code", "fix_code"):
-                history.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "[系统提示]\n"
-                            "代码验证已尝试多次。请立即停止 fix_code/run_code，"
-                            "调用 ACTION: finalize_report（一键 UML+截图+填表），"
-                            "或依次 render_uml → screenshot → fill_report。"
-                            "实验报告类作业必须产出 Word 文档，代码运行失败不能作为跳过填表的理由。"
-                        ),
-                    }
-                )
+                from modules.deliverable import is_content_only_output_mode
+
+                if is_content_only_output_mode(output_mode):
+                    hint = (
+                        "[系统提示]\n"
+                        "代码验证已尝试多次。请立即停止 fix_code/run_code，"
+                        "调用 ACTION: finalize_report（一键 UML+交付），"
+                        "或依次 render_uml → present_deliverable。"
+                        "solve_lab 已生成答案，代码运行失败不能阻止在答案工作区交付。"
+                    )
+                else:
+                    hint = (
+                        "[系统提示]\n"
+                        "代码验证已尝试多次。请立即停止 fix_code/run_code，"
+                        "调用 ACTION: finalize_report（一键 UML+填表），"
+                        "或依次 render_uml → present_deliverable / fill_report。"
+                        "实验报告类作业应完成填表或交付，代码运行失败不能作为跳过理由。"
+                    )
+                history.append({"role": "user", "content": hint})
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 failed_mod = tool_to_module(last_action) or last_action
                 if failed_mod and failed_mod != "solve_lab":
@@ -349,52 +440,29 @@ def run_react_loop(
 
     _emit_progress_done_steps(ctx, steps)
 
-    report = orch.run_verify(auto_remediate=bool(ctx.get("auto_remediate")))
+    from agent.run_result import complete_agent_run
 
-    # If solve_lab never ran successfully, try fallback
-    any_solve = (ctx.get("module_results") or {}).get("solve_lab", {}).get("ok")
-    if not any_solve and use_fallback:
-        try:
-            from agent.fallback import fallback_to_solve
-
-            fallback_to_solve(ctx)
-        except Exception:
-            pass
-
-    # Collect final state
-    fill_mr = (ctx.get("module_results") or {}).get("fill_report")
-    final = {
-        "run_id": run_id,
-        "ok": bool(any_solve or report.get("passed", False)),
-        "module_results": {
-            k: {"ok": v.get("ok"), "data": v.get("data")}
-            for k, v in (ctx.get("module_results") or {}).items()
-        },
-        "verification_report": report,
-        "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
-        "thought_trace": thought_history,
-        "decision_log": ctx.get("decision_log") or [],
-    }
-    release_run(run_id, "completed")
-    # Clean up run temp
-    from agent.document_store import clear_run_temp
-    from agent.orchestrator import finalize_run_payload
-
-    clear_run_temp(run_id)
-    final = finalize_run_payload(orch, final)
-    _emit({"type": "done", **final})
-    logi("react", f"run_id={run_id} done ok={final.get('ok')}")
-    return final
+    return complete_agent_run(
+        run_id,
+        ctx,
+        orch,
+        emit=_emit,
+        use_fallback=use_fallback,
+        extra_final={"thought_trace": thought_history},
+        agent_log_tag="react",
+    )
 
 
 def _emit_progress_done_steps(ctx: dict, steps: list):
-    """After the ReAct loop finishes, mark all plan steps as done in SSE."""
+    """After ReAct loop, emit tail-step progress for UI (present_deliverable or fill_report)."""
+    from agent.executor import progress_payload_for_module_result
+    from modules.deliverable import is_content_only_output_mode
+
     results = ctx.get("module_results") or {}
-    for step in steps:
-        module = step.get("module") or ""
-        if module and module in results:
-            continue  # Already run by ReAct
-    emit_event(
-        ctx.get("run_id") or "",
-        {"type": "progress", "module": "fill_report", "phase": "final", "status": "done"},
-    )
+    output_mode = ctx.get("output_mode", "deliverable")
+    tail = "present_deliverable" if is_content_only_output_mode(output_mode) else "fill_report"
+    if tail not in results:
+        return
+    payload = progress_payload_for_module_result(tail, results[tail])
+    payload["phase"] = "final"
+    emit_event(ctx.get("run_id") or "", payload)

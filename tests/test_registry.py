@@ -25,8 +25,6 @@ def test_planner_catalog_matches_legacy_set():
             "solve_lab",
             "solve_theory",
             "run_code",
-            "screenshot_ide",
-            "screenshot_terminal",
             "render_uml",
             "present_deliverable",
         }
@@ -44,16 +42,16 @@ def test_react_tool_schemas_match_legacy():
         "fix_code",
         "fix_diagrams",
         "run_code",
-        "screenshot",
         "fill_report",
         "render_uml",
+        "present_deliverable",
         "finalize_report",
     }
 
 
 def test_react_action_to_module_aliases():
     assert react_action_to_module("solve_lab") == "solve_lab"
-    assert react_action_to_module("screenshot") == "screenshot_ide"
+    assert react_action_to_module("present_deliverable") == "present_deliverable"
     assert react_action_to_module("finalize_report") == "finalize_report"
     assert react_action_to_module("unknown") == ""
     assert tool_to_module("RUN_CODE") == "run_code"

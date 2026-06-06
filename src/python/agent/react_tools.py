@@ -80,9 +80,28 @@ def execute_tool(ctx: dict, action: str, params: dict | None) -> dict[str, Any]:
             from agent.react_finalize import execute_finalize_report
             return execute_finalize_report(ctx, p)
 
-        result = runner(ctx, p)
-        ctx.setdefault("module_results", {})[module] = result
+        orch = ctx.get("_orchestrator")
+        if orch is not None:
+            result = orch.run_module(
+                module,
+                p,
+                emit_running=False,
+                decision_agent="react_loop",
+            )
+        else:
+            result = runner(ctx, p)
+            ctx.setdefault("module_results", {})[module] = result
         ok = bool(result.get("ok"))
+
+        # V5-4: fill_report failure is experimental — do not count as tool failure.
+        if module == "fill_report" and not ok:
+            err = (result.get("data") or {}).get("error", "未知错误")
+            return {
+                "ok": True,
+                "result_summary": f"填表未成功（不影响答案工作区）: {err[:300]}",
+                "data": result.get("data"),
+                "module": module,
+            }
 
         # run_code degraded → ReAct sees failure, but result stays in ctx for fill_report
         degraded = False
@@ -138,7 +157,7 @@ def _format_result_summary(module: str, result: dict, *, degraded: bool = False)
     if module == "run_code":
         # Internal auto-fix succeeded (executor._fix_and_retry returned fix_code result)
         if data.get("fixed"):
-            return f"代码经自动修复后运行成功（{data.get('retries', 0)} 次重试）。请调用 screenshot 截图。"
+            return f"代码经自动修复后运行成功（{data.get('retries', 0)} 次重试）。可继续 present_deliverable 或 finalize_report。"
         output = data.get("output") or ""
         is_error = data.get("is_error") or data.get("error") or False
         if is_error:
@@ -157,18 +176,18 @@ def _format_result_summary(module: str, result: dict, *, degraded: bool = False)
             return f"代码修复成功。语言: {lang}，请调用 run_code 验证修复结果。"
         return f"代码修复失败: {data.get('error', '未知错误')}"
 
-    if module in ("screenshot_ide", "screenshot_terminal"):
-        if ok:
-            imgs = data.get("images_b64") or []
-            return f"截图完成，共 {len(imgs)} 张"
-        return f"截图失败: {data.get('error', '未知错误')}"
-
     if module == "fill_report":
         if ok:
             if data.get("mode") == "answer_only":
                 return "answer_only 模式：跳过填表，答案已在界面展示"
             return f"报告填充完成，已保存至: {data.get('output_path', '?')}"
         return f"报告填充失败: {data.get('error', '未知错误')}"
+
+    if module == "present_deliverable":
+        if ok:
+            dlv_id = data.get("deliverable_id") or "?"
+            return f"答案交付物已汇编，可在答案工作区查看（id: {dlv_id}）"
+        return f"交付物汇编失败: {data.get('error', '未知错误')}"
 
     if module == "render_uml":
         if ok:

@@ -35,12 +35,11 @@ from agent.executor_dirty import (
     note_module_completed,
     should_rerun_module,
 )
-from agent.types import ModuleResult, PlanStep
-from config import IDE_RENDER_OK, TEMP_DIR, UML_RENDER_OK
+from agent.types import ModuleResult, PlanStep, is_non_blocking_module
+from config import TEMP_DIR, UML_RENDER_OK
 from log_util import loge, logi
 from modules.fill_report import do_fill
 from modules.run_code import execute_code, get_java_exe
-from modules.screenshot import paths_to_b64, render_ide_screenshot_file, render_terminal_image
 from modules.solve_lab import solve_lab
 from modules.uml import format_render_summary, render_uml_diagrams
 
@@ -98,6 +97,42 @@ def _build_error_meta(result_data: dict, module: str) -> dict | None:
     return meta if (meta["degraded"] or meta.get("category")) else None
 
 
+def progress_payload_for_module_result(
+    module: str,
+    result: ModuleResult,
+    *,
+    index: int | None = None,
+) -> dict[str, Any]:
+    """Map a module result to an SSE progress event (failed vs degraded for fill_report)."""
+    ok = bool(result.get("ok"))
+    payload: dict[str, Any] = {"type": "progress", "module": module}
+    if index is not None:
+        payload["index"] = index
+    if ok:
+        payload["status"] = "done"
+        return payload
+    result_data = result.get("data") or {}
+    err_msg = result_data.get("error", "失败")
+    payload["error"] = err_msg
+    if is_non_blocking_module(module):
+        payload["status"] = "degraded"
+        payload["error_meta"] = {
+            "degraded": True,
+            "degraded_reason": f"填表未成功（不影响答案工作区）：{err_msg}",
+        }
+        return payload
+    payload["status"] = "failed"
+    error_meta = _build_error_meta(result_data, module)
+    if error_meta:
+        payload["error_meta"] = error_meta
+    return payload
+
+
+def module_failure_blocks_pipeline(module: str, result: ModuleResult) -> bool:
+    """True when a failed module should increment consecutive_failures / trigger replan."""
+    return not result.get("ok") and not is_non_blocking_module(module)
+
+
 def _run_solve_lab(ctx: dict, params: dict) -> ModuleResult:
     settings = ctx["settings"]
     question = dict(ctx.get("question") or {})
@@ -133,7 +168,25 @@ def _run_solve_lab(ctx: dict, params: dict) -> ModuleResult:
 
         def _on_pipeline_phase(event: dict) -> None:
             ctx.setdefault("pipeline_phases", []).append(event)
+            run_id = ctx.get("run_id") or ""
+            if run_id:
+                emit_event(
+                    run_id,
+                    {"type": "pipeline_phase", "module": "solve_lab", **event},
+                )
 
+        approved_jar_ids = list(ctx.get("approved_jar_ids") or [])
+        run_id = ctx.get("run_id") or ""
+        on_jar_consent = None
+        constraints = user_constraints or []
+        if run_id and "allow_curated_jars" in constraints:
+            from agent.run_control import wait_for_jar_consent
+
+            on_jar_consent = lambda missing: wait_for_jar_consent(run_id, missing)
+
+        from modules.solve_pipeline import resolve_solve_quality_tier
+
+        tier = resolve_solve_quality_tier(settings)
         result = solve_lab(
             settings["api_key"],
             settings.get("provider", "deepseek"),
@@ -145,6 +198,9 @@ def _run_solve_lab(ctx: dict, params: dict) -> ModuleResult:
             settings=settings,
             user_constraints=user_constraints,
             on_phase=_on_pipeline_phase,
+            on_jar_consent=on_jar_consent,
+            approved_jar_ids=approved_jar_ids or None,
+            tier=tier,
         )
         if result.get("solve_session"):
             ctx["solve_session"] = result["solve_session"]
@@ -192,6 +248,28 @@ def _run_run_code(ctx: dict, params: dict) -> ModuleResult:
     from modules.run_code import classify_run_error, execute_code, execute_multi_file
 
     solve = _get_solve_data(ctx)
+    session = ctx.get("solve_session") or solve.get("solve_session") or {}
+    pipeline_meta = solve.get("pipeline_meta") or {}
+    code_status = (session.get("code_status") or pipeline_meta.get("code_status") or "").lower()
+    if code_status == "verified":
+        run_result = session.get("run_result") or {}
+        output = run_result.get("output") or run_result.get("stdout") or ""
+        logi("executor", "run_code skipped: already verified in solve_lab V4 pipeline")
+        verified_files = session.get("code_files") or solve.get("code_files") or []
+        verified_main = session.get("main_file") or solve.get("main_file") or ""
+        return _ok_result(
+            "run_code",
+            {
+                "output": output,
+                "error": False,
+                "is_error": False,
+                "degraded": False,
+                "reused_from_solve_lab": True,
+                "code_files": verified_files,
+                "main_file": verified_main,
+            },
+            params,
+        )
     code_files = solve.get("code_files") or []
     main_file = solve.get("main_file") or ""
     code = solve.get("code") or ""
@@ -514,35 +592,6 @@ def _run_fix_code(ctx: dict, params: dict) -> ModuleResult:
         return _fail_result("fix_code", str(e), params)
 
 
-def _run_screenshot(ctx: dict, params: dict, module: str) -> ModuleResult:
-    solve = _get_solve_data(ctx)
-    code = solve.get("code") or ""
-    language = solve.get("language") or "java"
-    run_mr = (ctx.get("module_results") or {}).get("run_code") or {}
-    terminal_text = (run_mr.get("data") or {}).get("output") or solve.get("parsed", {}).get(
-        "expected_output", ""
-    )
-    style = params.get("style", "ide")
-    try:
-        if module == "screenshot_terminal" or style == "terminal":
-            img_path = render_terminal_image(terminal_text, "Terminal")
-            images_b64 = [base64.b64encode(Path(img_path).read_bytes()).decode()]
-        elif IDE_RENDER_OK and code:
-            paths = render_ide_screenshot_file(code, terminal_text, language)
-            images_b64 = paths_to_b64(paths)
-            img_path = paths[0] if paths else ""
-        else:
-            img_path = render_terminal_image(terminal_text, "Output")
-            images_b64 = [base64.b64encode(Path(img_path).read_bytes()).decode()]
-        return _ok_result(
-            module,
-            {"images_b64": images_b64, "image_b64": images_b64[0] if images_b64 else None},
-            params,
-        )
-    except Exception as e:
-        return _fail_result(module, str(e), params)
-
-
 def _run_render_uml(ctx: dict, params: dict) -> ModuleResult:
     if not UML_RENDER_OK:
         return _fail_result("render_uml", "UML 模块不可用", params)
@@ -572,6 +621,75 @@ def _run_render_uml(ctx: dict, params: dict) -> ModuleResult:
         )
     except Exception as e:
         return _fail_result("render_uml", str(e), params)
+
+
+def _run_revise_answer(ctx: dict, params: dict) -> ModuleResult:
+    from agent.executor_dirty import (
+        apply_revise_to_module_results,
+        code_status_from_ctx,
+        mark_dirty_from_revise,
+    )
+    from modules.revise_answer import revise_answer
+
+    solve_mr = (ctx.get("module_results") or {}).get("solve_lab") or {}
+    if not solve_mr.get("ok"):
+        return _fail_result("revise_answer", "无 solve_lab 结果可修订", params)
+
+    solve_data = dict(solve_mr.get("data") or {})
+    parsed = dict(solve_data.get("parsed") or solve_data)
+    verification = ctx.get("verification_report") or {}
+    dirty_fields = (ctx.get("dirty_fields") or {}).get("solve_lab") or []
+
+    scope = params.get("scope")
+    if not scope:
+        if code_status_from_ctx(ctx) == "verified":
+            scope = ["steps", "result", "summary"]
+        elif dirty_fields and dirty_fields != ["full"]:
+            scope = dirty_fields
+        else:
+            scope = ["full"]
+
+    failed_checks = [c for c in verification.get("checks", []) if not c.get("ok")]
+    feedback = (params.get("feedback") or "").strip() or "; ".join(
+        f"{c.get('id')}: {c.get('message')}" for c in failed_checks[:5]
+    ) or "请根据校验结果改进答案文字"
+
+    try:
+        rev = revise_answer(
+            ctx["settings"],
+            parsed=parsed,
+            report_excerpt=ctx.get("planner_input_text") or ctx.get("report_text") or "",
+            scope=scope,
+            feedback=feedback,
+            verification_report=verification,
+            format_spec=ctx.get("format_spec"),
+        )
+        merged = dict(solve_data)
+        merged["parsed"] = rev.get("parsed") or parsed
+        rev_parsed = merged["parsed"]
+        for key in (
+            "steps_analysis",
+            "result_description",
+            "summary",
+            "expected_output",
+            "code",
+            "code_files",
+            "diagrams",
+            "language",
+            "main_file",
+        ):
+            if key in rev_parsed:
+                merged[key] = rev_parsed[key]
+        changed = rev.get("changed_fields") or (scope if isinstance(scope, list) else [scope])
+        apply_revise_to_module_results(ctx, merged, changed_fields=changed)
+        mark_dirty_from_revise(
+            ctx,
+            changed_fields=changed,
+            scope=scope if isinstance(scope, list) else [scope],
+        )
+        return _ok_result("revise_answer", rev, params)
+    except Exception as e:
+        return _fail_result("revise_answer", str(e), params)
 
 
 def _run_fix_diagrams(ctx: dict, params: dict) -> ModuleResult:
@@ -717,13 +835,6 @@ def _run_fill_report(ctx: dict, params: dict) -> ModuleResult:
     if solve:
         ans = dict(solve)
         ans.setdefault("type", "lab_report" if solve.get("parsed") else "theory")
-        shot = (ctx.get("module_results") or {}).get("screenshot_ide") or (
-            ctx.get("module_results") or {}
-        ).get("screenshot_terminal")
-        if shot and shot.get("ok"):
-            imgs = (shot.get("data") or {}).get("images_b64") or []
-            if imgs:
-                ans["images_b64"] = imgs
         uml = (ctx.get("module_results") or {}).get("render_uml")
         if uml and uml.get("ok"):
             uml_imgs = (uml.get("data") or {}).get("images_b64") or []
@@ -843,10 +954,9 @@ _MODULE_RUNNERS = {
     "solve_theory": _run_solve_theory,
     "run_code": _run_run_code,
     "fix_code": _run_fix_code,
-    "screenshot_ide": lambda ctx, p: _run_screenshot(ctx, p, "screenshot_ide"),
-    "screenshot_terminal": lambda ctx, p: _run_screenshot(ctx, p, "screenshot_terminal"),
     "render_uml": _run_render_uml,
     "fix_diagrams": _run_fix_diagrams,
+    "revise_answer": _run_revise_answer,
     "fill_report": _run_fill_report,
     "present_deliverable": _run_present_deliverable,
 }
@@ -859,6 +969,13 @@ def run_module(ctx: dict, step: PlanStep) -> ModuleResult:
     if not runner:
         return _fail_result(module, f"未知模块: {module}", params)
     return runner(ctx, params)
+
+
+def _standard_run_ok(ctx: dict) -> bool:
+    """Core solve success for standard mode done.ok (RL3 / RL7)."""
+    from agent.run_result import compute_run_ok
+
+    return compute_run_ok(ctx)
 
 
 def execute_standard_run(
@@ -885,7 +1002,7 @@ def _execute_standard_via_orchestrator(
     *,
     use_fallback: bool = True,
 ) -> dict[str, Any]:
-    from agent.orchestrator import RunOrchestrator, RunStepsOptions, finalize_run_payload
+    from agent.orchestrator import RunOrchestrator, RunStepsOptions
 
     emit = lambda ev: emit_event(run_id, ev)
     ctx["run_id"] = run_id
@@ -908,45 +1025,17 @@ def _execute_standard_via_orchestrator(
         release_run(run_id, "cancelled")
         return {"cancelled": True, "run_id": run_id}
 
-    verification = orch.run_verify(auto_remediate=bool(ctx.get("auto_remediate")))
-    fill_mr = (ctx.get("module_results") or {}).get("fill_report")
-    present_mr = (ctx.get("module_results") or {}).get("present_deliverable")
-    deliverable = ctx.get("deliverable") or (present_mr or {}).get("data", {}).get("deliverable")
-    final = {
-        "run_id": run_id,
-        "module_results": {
-            k: {"ok": v.get("ok"), "data": v.get("data")}
-            for k, v in (ctx.get("module_results") or {}).items()
-        },
-        "decision_log": ctx.get("decision_log"),
-        "verification_report": verification,
-        "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
-        "deliverable": deliverable,
-    }
+    from agent.run_result import complete_agent_run
 
-    any_ok = any(
-        (ctx.get("module_results") or {}).get(m, {}).get("ok")
-        for m in ("solve_lab", "solve_theory")
+    return complete_agent_run(
+        run_id,
+        ctx,
+        orch,
+        emit=emit,
+        use_fallback=use_fallback,
+        fallback_fatal=True,
+        agent_log_tag="executor",
     )
-    if not any_ok and use_fallback:
-        try:
-            fallback_to_solve(ctx, emit=on_decision)
-            final["fallback"] = True
-            final["module_results"]["solve_lab"] = ctx["module_results"].get("solve_lab")
-        except Exception as e:
-            mapped = map_api_error(e)
-            emit({"type": "error", **mapped})
-            release_run(run_id, "error")
-            clear_run_temp(run_id)
-            emit({"type": "done", "ok": False, **final})
-            return final
-
-    release_run(run_id, "completed")
-    clear_run_temp(run_id)
-    final = finalize_run_payload(orch, final)
-    emit({"type": "done", "ok": True, **final})
-    logi("executor", f"run_id={run_id} completed")
-    return final
 
 
 def _execute_standard_run_legacy(
@@ -1087,21 +1176,14 @@ def _execute_standard_run_legacy(
             completed_modules.append(module)
             note_module_completed(ctx, module)
         else:
-            ctx["consecutive_failures"] = int(ctx.get("consecutive_failures") or 0) + 1
             result_data = result.get("data") or {}
             err_msg = result_data.get("error", "失败")
-            set_last_error(run_id, module, err_msg)
-            error_meta = _build_error_meta(result_data, module) if module == "run_code" else None
-            emit(
-                {
-                    "type": "progress",
-                    "module": module,
-                    "index": i,
-                    "status": "failed",
-                    "error": err_msg,
-                    "error_meta": error_meta,
-                }
-            )
+            if module_failure_blocks_pipeline(module, result):
+                ctx["consecutive_failures"] = int(ctx.get("consecutive_failures") or 0) + 1
+                set_last_error(run_id, module, err_msg)
+            else:
+                ctx["consecutive_failures"] = 0
+            emit(progress_payload_for_module_result(module, result, index=i))
 
             if ctx["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
                 rounds_before = int(ctx.get("replan_rounds") or 0)
@@ -1182,8 +1264,8 @@ def _execute_standard_run_legacy(
 
     release_run(run_id, "completed")
     clear_run_temp(run_id)
-    emit({"type": "done", "ok": True, **final})
-    logi("executor", f"run_id={run_id} completed")
+    emit({"type": "done", "ok": _standard_run_ok(ctx), **final})
+    logi("executor", f"run_id={run_id} completed ok={_standard_run_ok(ctx)}")
     return final
 
 

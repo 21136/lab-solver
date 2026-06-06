@@ -10,6 +10,7 @@ from pathlib import Path
 TEMP_DIR = Path(tempfile.gettempdir()) / "lab_solver"
 APP_DATA = Path(os.environ.get("APPDATA", TEMP_DIR)) / "lab-solver"
 JRE_DIR = APP_DATA / "jre"
+JARS_DIR = APP_DATA / "jars"
 TEMP_DIR.mkdir(exist_ok=True)
 APP_DATA.mkdir(exist_ok=True)
 
@@ -34,12 +35,14 @@ try:
 except ImportError:
     PIL_OK = False
 
-try:
-    from ide_render import save_ide_screenshot_pages, LANG_FILENAMES  # noqa: F401
-    IDE_RENDER_OK = True
-except ImportError:
-    IDE_RENDER_OK = False
-    LANG_FILENAMES = {}
+OCR_OK = False
+if shutil.which("tesseract"):
+    try:
+        import pytesseract  # noqa: F401
+
+        OCR_OK = True
+    except ImportError:
+        OCR_OK = False
 
 try:
     from uml_render import detect_needs_uml, render_diagrams  # noqa: F401
@@ -108,7 +111,13 @@ def _probe_python_env():
 
 
 def _probe_java_env():
-    result = {"available": False, "javac_path": "", "java_path": "", "version_info": ""}
+    result = {
+        "available": False,
+        "javac_path": "",
+        "java_path": "",
+        "version_info": "",
+        "installed_jars": [],
+    }
     try:
         javac = None
         for p in JRE_DIR.glob("*/bin/javac.exe"):
@@ -134,6 +143,12 @@ def _probe_java_env():
                 result["version_info"] = version_line.strip().split("\n")[0] if version_line else ""
             except Exception:
                 pass
+        try:
+            from modules.java_jars import list_installed_jars
+
+            result["installed_jars"] = list_installed_jars()
+        except Exception:
+            pass
     except Exception:
         pass
     return result
@@ -216,6 +231,10 @@ def build_java_env_section():
     lines = ["当前 Java 环境可用"]
     if env.get("version_info"):
         lines.append(f"Java 版本：{env['version_info']}")
+    installed = env.get("installed_jars") or []
+    if installed:
+        names = ", ".join(j.get("label") or j.get("id", "") for j in installed)
+        lines.append(f"验证沙箱已安装扩展库（仅内化验证）：{names}")
     return "\n".join(lines)
 
 
@@ -334,6 +353,91 @@ def get_diagram_tools_status() -> dict:
         "graphviz_source": graphviz_source,
         "graphviz_message": graphviz_message,
         "graphviz_assets_dir": graphviz_assets,
+    }
+
+
+def get_ocr_install_guide() -> dict:
+    """Platform-specific Tesseract download URL and install steps for settings UI."""
+    tesseract_on_path = bool(shutil.which("tesseract"))
+    pytesseract_ok = False
+    if tesseract_on_path:
+        try:
+            import pytesseract  # noqa: F401
+
+            pytesseract_ok = True
+        except ImportError:
+            pass
+
+    if OCR_OK:
+        issue = "ok"
+    elif tesseract_on_path and not pytesseract_ok:
+        issue = "missing_pytesseract"
+    else:
+        issue = "missing_tesseract"
+
+    base = {
+        "label": "Tesseract OCR",
+        "available": OCR_OK,
+        "tesseract_on_path": tesseract_on_path,
+        "pytesseract_ok": pytesseract_ok,
+        "issue": issue,
+    }
+
+    if issue == "missing_pytesseract":
+        return {
+            **base,
+            "install_guide": "Tesseract 已安装，但 Python OCR 桥接包 pytesseract 未安装",
+            "install_steps": [
+                "Tesseract 引擎本身没问题（系统已能找到 tesseract 命令）",
+                "缺少的是 Python 包 pytesseract，请在运行本应用的 Python 环境中执行：pip install pytesseract",
+                "安装后点「重新检测」；开发模式下重启 Python 后端即可",
+            ],
+            "alt_hint": "也可在解析页手动粘贴题目文字，无需安装 OCR",
+        }
+
+    if sys.platform == "win32":
+        return {
+            **base,
+            "download_url": "https://github.com/UB-Mannheim/tesseract/wiki",
+            "download_label": "打开 Tesseract 下载页",
+            "lang_pack_url": "https://github.com/tesseract-ocr/tessdata/raw/main/chi_sim.traineddata",
+            "lang_pack_label": "下载中文语言包 (chi_sim)",
+            "install_guide": (
+                "下载 Windows 安装包并运行；安装时勾选 Additional language data，"
+                "选中 Chinese - Simplified (chi_sim)"
+            ),
+            "install_steps": [
+                "点击下方「打开 Tesseract 下载页」，下载 tesseract-ocr-w64-setup 安装包",
+                "运行安装程序，在语言包步骤勾选 Chinese - Simplified (chi_sim)",
+                "若已安装但缺中文包，可点「下载中文语言包」保存到 Tesseract 的 tessdata 文件夹",
+                "安装完成后点「重新检测」；仍失败请完全退出并重启本应用",
+            ],
+            "alt_hint": "也可在解析页手动粘贴题目文字，无需安装 OCR",
+        }
+    if sys.platform == "darwin":
+        return {
+            **base,
+            "download_url": "https://formulae.brew.sh/formula/tesseract-lang",
+            "download_label": "查看 Homebrew 说明",
+            "install_guide": "终端执行：brew install tesseract tesseract-lang",
+            "install_steps": [
+                "打开「终端」，运行：brew install tesseract tesseract-lang",
+                "安装完成后点「重新检测」；仍失败请完全退出并重启本应用",
+            ],
+            "alt_hint": "也可在解析页手动粘贴题目文字，无需安装 OCR",
+        }
+    return {
+        **base,
+        "download_url": "https://github.com/tesseract-ocr/tesseract",
+        "download_label": "查看 Tesseract 官方说明",
+        "install_guide": "Ubuntu/Debian: sudo apt install tesseract-ocr tesseract-ocr-chi-sim",
+        "install_steps": [
+            "Ubuntu/Debian：sudo apt install tesseract-ocr tesseract-ocr-chi-sim",
+            "Fedora：sudo dnf install tesseract tesseract-langpack-chi_sim",
+            "Arch：sudo pacman -S tesseract tesseract-data-chi_sim",
+            "安装完成后点「重新检测」；仍失败请完全退出并重启本应用",
+        ],
+        "alt_hint": "也可在解析页手动粘贴题目文字，无需安装 OCR",
     }
 
 

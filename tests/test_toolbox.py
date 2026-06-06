@@ -285,53 +285,7 @@ class TestToolRun:
         assert data["data"]["is_error"] is True
 
 
-# ── 4. Screenshot ──
-
-
-class TestToolScreenshot:
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        self.client = app.test_client()
-
-    def test_missing_code(self):
-        resp = self.client.post("/api/tool/screenshot", json={})
-        data = resp.get_json()
-        assert resp.status_code == 400
-        assert data["ok"] is False
-
-    @patch("server.paths_to_b64")
-    @patch("server.render_ide_screenshot_file")
-    def test_successful_screenshot(self, mock_render, mock_b64):
-        mock_render.return_value = ["/tmp/screenshot_001.png"]
-        mock_b64.return_value = ["abc123base64"]
-        resp = self.client.post("/api/tool/screenshot", json={
-            "code": "print('hello')",
-            "language": "python",
-            "chrome_style": "mac",
-        })
-        data = resp.get_json()
-        assert resp.status_code == 200
-        assert data["ok"] is True
-        assert data["data"]["images_b64"] == ["abc123base64"]
-        assert data["data"]["image_b64"] == "abc123base64"
-        assert data["data"]["page_count"] == 1
-
-    @patch("server.paths_to_b64")
-    @patch("server.render_ide_screenshot_file")
-    def test_screenshot_respects_output_text(self, mock_render, mock_b64):
-        mock_render.return_value = ["/tmp/s.png"]
-        mock_b64.return_value = ["xyz"]
-        resp = self.client.post("/api/tool/screenshot", json={
-            "code": "print('hello')",
-            "language": "python",
-            "output": "Hello\n",
-        })
-        data = resp.get_json()
-        assert resp.status_code == 200
-        assert data["ok"] is True
-
-
-# ── 5. UML ──
+# ── 4. UML ──
 
 
 class TestToolUml:

@@ -42,7 +42,7 @@ public class Main {
 def test_normalize_profile_defaults():
     p = normalize_profile({})
     assert p["default_language"] == DEFAULT_PROFILE["default_language"]
-    assert p["screenshot_style"] == "ide"
+    assert p["prefer_uml"] is False
 
 
 def test_merge_profile_overlay():

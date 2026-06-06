@@ -30,6 +30,8 @@ from log_util import loge, logi
 from modules.lab_parse import parse_lab_json
 
 from agent.registry import planner_module_catalog
+from modules.solve_pipeline import _CODE_KEYWORDS
+from modules.user_constraints import normalize_user_constraints, should_skip_validation
 
 # Phase 1.3: planner may only emit steps the legacy pipeline can approximate.
 _THIN_PLANNER_MODULES = planner_module_catalog()
@@ -96,12 +98,6 @@ def _normalize_step(step: dict, profile: dict, index: int) -> Optional[PlanStep]
     params = dict(step.get("params") or {})
     if module == "solve_lab" and "language" not in params:
         params.setdefault("language", profile.get("default_language", "java"))
-    if module in ("screenshot_ide", "screenshot_terminal") and "style" not in params:
-        style = profile.get("screenshot_style", "ide")
-        if module == "screenshot_terminal":
-            params.setdefault("style", "terminal")
-        else:
-            params.setdefault("style", style)
 
     confidence = (step.get("confidence") or "high").lower()
     if confidence not in ("high", "medium", "low"):
@@ -141,6 +137,97 @@ def normalize_plan(raw: dict, profile: dict) -> tuple[list[PlanStep], list[dict]
     return steps, clarifications
 
 
+def report_needs_code(report_text: str) -> bool:
+    """True when report text suggests programming / runnable code."""
+    text = (report_text or "").strip()
+    if not text:
+        return False
+    text_lower = text.lower()
+    return any(k in text or k in text_lower for k in _CODE_KEYWORDS)
+
+
+def adjust_plan_for_skip_validation(
+    steps: list[PlanStep],
+    constraints: list[str] | None,
+) -> list[PlanStep]:
+    """User chose skip_validation — drop standalone run_code steps."""
+    if not should_skip_validation(constraints or []):
+        return steps
+    return [s for s in steps if (s.get("module") or "") != "run_code"]
+
+
+def adjust_plan_theory_only(steps: list[PlanStep], report_text: str) -> list[PlanStep]:
+    """Pure theory reports should not include run_code / render_uml."""
+    if report_needs_code(report_text):
+        return steps
+    drop = {"run_code", "fix_code"}
+    out: list[PlanStep] = []
+    for step in steps:
+        mod = step.get("module") or ""
+        if mod in drop or mod == "render_uml":
+            continue
+        out.append(step)
+    return out
+
+
+def enrich_low_confidence_steps(steps: list[PlanStep]) -> list[PlanStep]:
+    """Low-confidence steps default off with an explicit reason for Step2 UI."""
+    out: list[PlanStep] = []
+    for step in steps:
+        s = dict(step)
+        if (s.get("confidence") or "").lower() == "low":
+            reason = (s.get("reason") or "").strip()
+            hint = "置信度较低，请确认是否执行"
+            if reason and hint not in reason:
+                s["reason"] = f"{reason}（{hint}）"
+            elif not reason:
+                s["reason"] = f"计划步骤：{s.get('module')}（{hint}）"
+            s["default_checked"] = False
+        out.append(s)  # type: ignore[arg-type]
+    return out
+
+
+def adjust_plan_v4_aware(
+    steps: list[PlanStep],
+    settings: dict | None,
+    report_text: str,
+    constraints: list[str] | None = None,
+) -> list[PlanStep]:
+    """Post-process planner output for V4 pipeline + user constraints (AO-4)."""
+    steps = adjust_plan_for_v4_pipeline(steps, settings)
+    steps = adjust_plan_for_skip_validation(steps, constraints)
+    steps = adjust_plan_theory_only(steps, report_text)
+    steps = enrich_low_confidence_steps(steps)
+    return steps
+
+
+def adjust_plan_for_v4_pipeline(
+    steps: list[PlanStep],
+    settings: dict | None = None,
+) -> list[PlanStep]:
+    """V4 solve_lab already runs sandbox validation — demote redundant run_code steps."""
+    from modules.solve_pipeline import should_use_pipeline
+
+    if not should_use_pipeline(settings):
+        return steps
+    if not any(s.get("module") == "solve_lab" for s in steps):
+        return steps
+
+    note = "solve_lab（V4）已含内化验证"
+    out: list[PlanStep] = []
+    for step in steps:
+        if step.get("module") != "run_code":
+            out.append(step)
+            continue
+        adjusted = dict(step)
+        adjusted["default_checked"] = False
+        reason = (adjusted.get("reason") or "").strip()
+        if note not in reason:
+            adjusted["reason"] = f"{reason}（{note}，此步可选）" if reason else f"{note}，此步可选"
+        out.append(adjusted)
+    return out
+
+
 def _normalize_clarifications(items: list) -> list[dict]:
     out: list[dict] = []
     if not isinstance(items, list):
@@ -169,33 +256,23 @@ def _normalize_clarifications(items: list) -> list[dict]:
 def _clarifications_from_steps(steps: list[PlanStep]) -> list[dict]:
     """Generate clarification cards for medium/low confidence steps."""
     by_topic: dict[str, list[str]] = {}
+    low_reasons: dict[str, str] = {}
     for step in steps:
         conf = (step.get("confidence") or "high").lower()
         if conf not in ("medium", "low"):
             continue
         mod = step.get("module") or ""
-        if mod in ("screenshot_ide", "screenshot_terminal"):
-            by_topic.setdefault("screenshot", []).append(mod)
-        elif mod == "render_uml":
+        reason = (step.get("reason") or "").strip()
+        if mod == "render_uml":
             by_topic.setdefault("uml", []).append(mod)
+            if reason:
+                low_reasons["uml"] = reason
         elif mod == "run_code":
             by_topic.setdefault("code", []).append(mod)
+            if reason:
+                low_reasons["code"] = reason
 
     clarifications: list[dict] = []
-    if by_topic.get("screenshot"):
-        mods = by_topic["screenshot"]
-        clarifications.append(
-            {
-                "id": "q_screenshot",
-                "question": "报告要求截图，你需要哪种截图方式？",
-                "options": [
-                    {"label": "IDE+终端", "affects": ["screenshot_ide"]},
-                    {"label": "仅终端", "affects": ["screenshot_terminal"]},
-                ],
-                "default": "IDE+终端" if "screenshot_ide" in mods else "仅终端",
-                "default_reason": "根据计划步骤推断",
-            }
-        )
     if by_topic.get("uml"):
         clarifications.append(
             {
@@ -206,7 +283,22 @@ def _clarifications_from_steps(steps: list[PlanStep]) -> list[dict]:
                     {"label": "不需要", "affects": []},
                 ],
                 "default": "需要 UML",
-                "default_reason": "报告或步骤置信度为 medium/low",
+                "default_reason": low_reasons.get("uml")
+                or "报告或步骤置信度为 medium/low",
+            }
+        )
+    if by_topic.get("code"):
+        clarifications.append(
+            {
+                "id": "q_code",
+                "question": "是否需要单独运行/复验代码？",
+                "options": [
+                    {"label": "需要复验", "affects": ["run_code"]},
+                    {"label": "不需要", "affects": []},
+                ],
+                "default": "不需要",
+                "default_reason": low_reasons.get("code")
+                or "V4 solve_lab 已含内化验证",
             }
         )
     return clarifications
@@ -241,7 +333,7 @@ def _fallback_plan(
 ) -> list[PlanStep]:
     """Minimal plan when LLM JSON is empty or unusable.
 
-    When the target language runtime is not available, run_code / screenshot
+    When the target language runtime is not available, run_code
     steps are still included but default_checked=False with a clear reason.
     """
     steps: list[PlanStep] = []
@@ -270,8 +362,13 @@ def _fallback_plan(
             )
         )
         if re.search(r"代码|程序|编程|运行|编译", report_text):
+            from modules.solve_pipeline import should_use_pipeline
+
+            v4_pipeline = should_use_pipeline(None)
             run_reason = "报告提及程序/运行"
-            run_checked = True
+            run_checked = not v4_pipeline
+            if v4_pipeline:
+                run_reason = "报告提及程序/运行（solve_lab V4 已含内化验证，此步可选）"
             if not any_rt:
                 run_reason = "报告提及程序/运行，但本地无编程环境（未安装 Python/Java/C/Node），代码仅生成不执行"
                 run_checked = False
@@ -292,27 +389,7 @@ def _fallback_plan(
                 )
             )
         if re.search(r"截图|界面|运行结果", report_text):
-            mod = (
-                "screenshot_terminal"
-                if profile.get("screenshot_style") == "terminal"
-                else "screenshot_ide"
-            )
-            ss_checked = any_rt and lang_available
-            steps.append(
-                PlanStep(
-                    module=mod,
-                    params={"style": profile.get("screenshot_style", "ide")},
-                    reason=(
-                        "报告要求截图"
-                        if ss_checked
-                        else "报告要求截图，但本地无可执行环境，截图步骤跳过"
-                    ),
-                    evidence="",
-                    source="fallback",
-                    confidence="medium",
-                    default_checked=ss_checked,
-                )
-            )
+            pass  # 运行截图已移除；结果说明由 solve_lab 文字 + 可选内化验证 stdout 覆盖
         if needs_uml or profile.get("prefer_uml") or dneeds.get("needs_uml"):
             uml_reason, uml_evidence = _render_uml_reason_evidence(dneeds)
             steps.append(
@@ -392,8 +469,6 @@ def plan_from_report(
         g = norm.get("global") or {}
         if g.get("language"):
             profile_norm["default_language"] = g["language"]
-        if g.get("screenshot_style"):
-            profile_norm["screenshot_style"] = g["screenshot_style"]
         if "include_uml" in g:
             needs_uml = needs_uml or bool(g.get("include_uml"))
         if g.get("include_code") is False:
@@ -402,6 +477,13 @@ def plan_from_report(
     provider = settings.get("provider", "deepseek")
     model = settings.get("model", "deepseek-chat")
     custom_url = settings.get("custom_url") or settings.get("customUrl") or ""
+
+    from modules.solve_pipeline import should_use_pipeline
+
+    user_constraints = normalize_user_constraints(
+        (settings or {}).get("user_constraints") or (settings or {}).get("userConstraints")
+    )
+    v4_pipeline = should_use_pipeline(settings)
 
     budgeted_text = fit_budget(
         text,
@@ -416,6 +498,8 @@ def plan_from_report(
         module_catalog=sorted(_THIN_PLANNER_MODULES),
         sections_block=sections_block,
         format_spec=format_spec,
+        v4_pipeline=v4_pipeline,
+        skip_validation=should_skip_validation(user_constraints),
     )
     prompt_version = PROMPTS["planner"].version
 
@@ -446,6 +530,7 @@ def plan_from_report(
     from agent.user_profile import apply_behavior_to_steps
 
     steps = apply_behavior_to_steps(steps, profile_norm)
+    steps = adjust_plan_v4_aware(steps, settings, text, user_constraints)
 
     doc_ids = document_ids
     if doc_ids is None and metadata:
@@ -645,15 +730,6 @@ def replan_with_answers(
         mod = step.get("module") or ""
         params = dict(step.get("params") or {})
         keep = True
-
-        if mod in ("screenshot_ide", "screenshot_terminal"):
-            choice = _answer_label("q_screenshot", step.get("reason") or "")
-            if "仅终端" in choice:
-                if mod == "screenshot_ide":
-                    keep = False
-            elif "IDE" in choice or "ide" in choice.lower():
-                if mod == "screenshot_terminal":
-                    keep = False
 
         if mod == "render_uml":
             choice = _answer_label("q_uml", "")

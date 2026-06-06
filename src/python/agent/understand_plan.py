@@ -67,7 +67,6 @@ def understand_and_plan(
         assignment_excerpt=assign[:2500],
         module_catalog=", ".join(sorted(_THIN_PLANNER_MODULES)),
         default_language=profile_norm.get("default_language", "java"),
-        screenshot_style=profile_norm.get("screenshot_style", "ide"),
         prefer_uml="是" if profile_norm.get("prefer_uml") else "否",
         sections_block=sections_block or "（无）",
         format_block=fmt_block,

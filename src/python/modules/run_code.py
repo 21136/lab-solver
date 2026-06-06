@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 from config import JRE_DIR, TEMP_DIR
+from modules.java_jars import build_java_classpath
 from log_util import loge, logi
 
 ERR_PREFIX = "[ERR]"
@@ -40,7 +41,7 @@ def java_status_info():
     }
 
 
-def execute_multi_file(files, language, main_file, work_dir=None):
+def execute_multi_file(files, language, main_file, work_dir=None, java_classpath_jars=None):
     """Execute a multi-file code project.
 
     Args:
@@ -86,7 +87,7 @@ def execute_multi_file(files, language, main_file, work_dir=None):
     main_path = wd / main_file
 
     if language == "java":
-        return _run_java_multi(wd, main_file)
+        return _run_java_multi(wd, main_file, java_classpath_jars=java_classpath_jars)
     if language == "c":
         return _compile_run_multi("gcc", wd, "*.c", "out_c.exe")
     if language == "cpp":
@@ -111,7 +112,7 @@ def execute_multi_file(files, language, main_file, work_dir=None):
         return f"{ERR_PREFIX} 找不到运行环境: {e}", True
 
 
-def _run_java_multi(work_dir, main_file):
+def _run_java_multi(work_dir, main_file, java_classpath_jars=None):
     """Compile all .java files then run the main class."""
     javac = get_javac_exe()
     java = get_java_exe()
@@ -119,10 +120,10 @@ def _run_java_multi(work_dir, main_file):
         return f"{ERR_PREFIX} 未找到javac", True
 
     main_stem = Path(main_file).stem
+    cp = build_java_classpath(work_dir, java_classpath_jars)
     try:
-        import glob as _glob
         java_files = list(Path(work_dir).glob("*.java"))
-        javac_cmd = [javac, "-encoding", "UTF-8"] + [str(f) for f in java_files]
+        javac_cmd = [javac, "-encoding", "UTF-8", "-cp", cp] + [str(f) for f in java_files]
         logi("java_multi", f"编译 {len(java_files)} 个文件: {[f.name for f in java_files]}")
         rc = subprocess.run(
             javac_cmd, capture_output=True, timeout=30, cwd=str(work_dir)
@@ -142,7 +143,7 @@ def _run_java_multi(work_dir, main_file):
             return f"{ERR_PREFIX} 编译错误:\n" + err, True
         logi("java_multi", f"运行 {main_stem}")
         rr = subprocess.run(
-            [java, "-Dfile.encoding=UTF-8", "-cp", str(work_dir), main_stem],
+            [java, "-Dfile.encoding=UTF-8", "-cp", cp, main_stem],
             capture_output=True, timeout=15,
         )
         out = dec(rr.stdout)
@@ -187,7 +188,7 @@ def _compile_run_multi(compiler, work_dir, glob_pattern, out_name):
         return f"{ERR_PREFIX} {e}", True
 
 
-def execute_code(code, language):
+def execute_code(code, language, java_classpath_jars=None):
     ext = {
         "python": ".py",
         "javascript": ".js",
@@ -199,7 +200,7 @@ def execute_code(code, language):
     tmp.write_text(code, encoding="utf-8")
 
     if language == "java":
-        return _run_java(code)
+        return _run_java(code, java_classpath_jars=java_classpath_jars)
     if language == "c":
         return _compile_run("gcc", tmp, "out_c.exe")
     if language == "cpp":
@@ -226,7 +227,7 @@ def execute_code(code, language):
         return f"{ERR_PREFIX} 找不到运行环境: {e}", True
 
 
-def _run_java(code):
+def _run_java(code, java_classpath_jars=None):
     javac = get_javac_exe()
     java = get_java_exe()
     if not javac:
@@ -236,11 +237,12 @@ def _run_java(code):
     cls = m.group(1) if m else "Main"
     jf = TEMP_DIR / f"{cls}.java"
     jf.write_text(code, encoding="utf-8")
+    cp = build_java_classpath(TEMP_DIR, java_classpath_jars)
 
     try:
         logi("java", f"编译 {cls}.java")
         rc = subprocess.run(
-            [javac, "-encoding", "UTF-8", str(jf)],
+            [javac, "-encoding", "UTF-8", "-cp", cp, str(jf)],
             capture_output=True,
             timeout=30,
             cwd=str(TEMP_DIR),
@@ -260,7 +262,7 @@ def _run_java(code):
             return f"{ERR_PREFIX} 编译错误:\n" + err, True
         logi("java", f"运行 {cls}")
         rr = subprocess.run(
-            [java, "-Dfile.encoding=UTF-8", "-cp", str(TEMP_DIR), cls],
+            [java, "-Dfile.encoding=UTF-8", "-cp", cp, cls],
             capture_output=True,
             timeout=15,
         )

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // 文件操作
   openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
   openDocxDialog: () => ipcRenderer.invoke('open-docx-dialog'),
+  openImageDialog: () => ipcRenderer.invoke('open-image-dialog'),
   saveFileDialog: (defaultName, filters) => ipcRenderer.invoke('save-file-dialog', defaultName, filters),
   writeFileBase64: (filePath, base64) => ipcRenderer.invoke('write-file-base64', filePath, base64),
   writeFileText: (filePath, content) => ipcRenderer.invoke('write-file-text', filePath, content),

@@ -17,7 +17,13 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from pathlib import Path
+
 from config import APP_DATA
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+AI_INSIGHTS_PATH = _REPO_ROOT / "docs" / "reference" / "AI_INSIGHTS.md"
+PROMOTED_SKILLS_PATH = APP_DATA / "promoted_skills.json"
 
 
 def _match_keywords(text: str, keywords: list[str]) -> bool:
@@ -123,6 +129,83 @@ _register(
     "print()、elif、import math 等）。如果代码是 Python 写的，文件名必须以 .py 结尾，"
     "且 language 字段应设为 python。请逐一检查每个 code_file 的内容是否与文件扩展名一致。",
 )
+
+
+def _trigger_from_suggested(suggested: str):
+    """Build a trigger_fn from candidate suggested_trigger string."""
+    spec = (suggested or "").strip()
+
+    def _fn(ctx: dict) -> bool:
+        if spec.startswith("run_code.error_category="):
+            cat = spec.split("=", 1)[1]
+            for _mod, mr in (ctx.get("module_results") or {}).items():
+                if not isinstance(mr, dict):
+                    continue
+                data = mr.get("data") or {}
+                err = data.get("error_category")
+                if isinstance(err, dict):
+                    err = err.get("category")
+                if str(err or "") == cat:
+                    return True
+            return False
+        if spec.startswith("solve_lab.notes_hash="):
+            want = spec.split("=", 1)[1]
+            solve = (ctx.get("module_results") or {}).get("solve_lab") or {}
+            notes = ((solve.get("data") or {}).get("parsed") or {}).get("notes") or ""
+            return bool(notes) and _notes_hash(notes) == want
+        return False
+
+    return _fn
+
+
+def _load_promoted_skills_file() -> list[dict[str, Any]]:
+    if not PROMOTED_SKILLS_PATH.exists():
+        return []
+    try:
+        raw = json.loads(PROMOTED_SKILLS_PATH.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            items = raw.get("skills")
+            return list(items) if isinstance(items, list) else []
+        if isinstance(raw, list):
+            return raw
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    return []
+
+
+def _save_promoted_skills_file(skills: list[dict[str, Any]]) -> None:
+    APP_DATA.mkdir(parents=True, exist_ok=True)
+    PROMOTED_SKILLS_PATH.write_text(
+        json.dumps({"skills": skills}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _register_promoted_skill(entry: dict[str, Any]) -> None:
+    skill_id = str(entry.get("id") or "").strip()
+    if not skill_id or any(s.get("id") == skill_id for s in SKILLS):
+        return
+    inject = str(entry.get("inject") or "").strip()
+    if not inject:
+        return
+    _register(
+        skill_id,
+        str(entry.get("description") or entry.get("source") or skill_id),
+        _trigger_from_suggested(str(entry.get("suggested_trigger") or "")),
+        inject,
+    )
+
+
+def load_promoted_skills() -> list[dict[str, Any]]:
+    """Load user-promoted skills from disk and register triggers."""
+    skills = _load_promoted_skills_file()
+    for entry in skills:
+        if isinstance(entry, dict):
+            _register_promoted_skill(entry)
+    return skills
+
+
+load_promoted_skills()
 
 # ══════════════════════════════════════════════════════
 # Placeholder — add more skills here as insights mature
@@ -238,6 +321,98 @@ def record_skill_candidates_from_run(ctx: dict) -> list[dict[str, Any]]:
 
     _save_skill_candidates(candidates)
     return new_pending
+
+
+def list_skill_candidates(*, status: str | None = "pending") -> list[dict[str, Any]]:
+    """Return skill candidates, optionally filtered by status."""
+    items = [c for c in _load_skill_candidates() if isinstance(c, dict)]
+    if status:
+        return [c for c in items if (c.get("status") or "pending") == status]
+    return items
+
+
+def _append_ai_insights_promote_note(
+    skill_id: str,
+    source: str,
+    inject: str,
+    suggested_trigger: str,
+) -> bool:
+    """Append promote record to docs/reference/AI_INSIGHTS.md when writable."""
+    path = AI_INSIGHTS_PATH
+    if not path.is_file():
+        return False
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    block = (
+        f"\n## {stamp}\n\n"
+        f"### Promoted skill: `{skill_id}`\n\n"
+        f"**来源候选**: {source}\n\n"
+        f"**触发器**: `{suggested_trigger}`\n\n"
+        f"**注入文本**:\n\n{inject}\n"
+    )
+    try:
+        existing = path.read_text(encoding="utf-8")
+        path.write_text(existing.rstrip() + "\n" + block, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def promote_skill_candidate(
+    candidate_id: str,
+    *,
+    inject: str = "",
+    description: str = "",
+) -> dict[str, Any]:
+    """
+    Promote a pending candidate into promoted_skills.json and register at runtime.
+
+    Returns the promoted skill entry or raises ValueError.
+    """
+    cid = (candidate_id or "").strip()
+    if not cid:
+        raise ValueError("缺少 candidate id")
+
+    candidates = _load_skill_candidates()
+    entry = next((c for c in candidates if c.get("id") == cid), None)
+    if not entry:
+        raise ValueError(f"未找到候选: {cid}")
+    if entry.get("status") == "promoted":
+        raise ValueError(f"候选已 promote: {cid}")
+
+    inject_text = (inject or entry.get("suggested_inject") or "").strip()
+    if not inject_text:
+        inject_text = (
+            f"【技能候选 {cid}】根据历史运行经验，请注意与此触发相关的常见错误模式。"
+        )
+
+    skill_entry = {
+        "id": cid,
+        "description": description or f"Promoted from {entry.get('source', cid)}",
+        "source": entry.get("source") or cid,
+        "suggested_trigger": entry.get("suggested_trigger") or "",
+        "inject": inject_text,
+        "promoted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    promoted = _load_promoted_skills_file()
+    promoted = [s for s in promoted if s.get("id") != cid]
+    promoted.append(skill_entry)
+    _save_promoted_skills_file(promoted)
+    _register_promoted_skill(skill_entry)
+
+    entry["status"] = "promoted"
+    entry["promoted_at"] = skill_entry["promoted_at"]
+    entry["suggested_inject"] = inject_text
+    _save_skill_candidates(candidates)
+
+    insights_updated = _append_ai_insights_promote_note(
+        cid,
+        str(entry.get("source") or ""),
+        inject_text,
+        str(entry.get("suggested_trigger") or ""),
+    )
+
+    return {**skill_entry, "insights_updated": insights_updated}
 
 
 def _parse_iso(value: Any) -> datetime | None:

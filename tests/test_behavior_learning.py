@@ -86,8 +86,13 @@ def test_plan_from_report_applies_behavior(mock_chat):
         )
     }
     result = plan_from_report(
-        "实验报告 三、实验步骤",
-        settings={"api_key": "sk-test", "provider": "deepseek", "model": "deepseek-chat"},
+        "实验报告 三、实验步骤 编写 Java 程序 绘制类图 UML",
+        settings={
+            "api_key": "sk-test",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "solvePipelineVersion": "v1",
+        },
         profile=profile,
     )
     uml = next(s for s in result["steps"] if s["module"] == "render_uml")
