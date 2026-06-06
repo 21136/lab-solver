@@ -1,0 +1,111 @@
+"""auto_remediate: verify fail → dirty → partial rerun → verify pass (V3-3)."""
+
+from unittest.mock import patch
+
+import pytest
+
+from agent.orchestrator import RunOrchestrator
+
+
+def _incomplete_solve():
+    return {
+        "ok": True,
+        "data": {
+            "type": "lab_report",
+            "parsed": {
+                "steps_analysis": "步骤",
+                "result_description": "结果",
+                "code": "print(1)",
+            },
+            "code": "print(1)",
+        },
+    }
+
+
+def _complete_solve():
+    return {
+        "ok": True,
+        "data": {
+            "type": "lab_report",
+            "parsed": {
+                "steps_analysis": "步骤",
+                "result_description": "结果",
+                "summary": "小结",
+                "code": "print(1)",
+            },
+            "code": "print(1)",
+        },
+    }
+
+
+@pytest.fixture(autouse=True)
+def _not_cancelled():
+    with patch("agent.orchestrator.is_cancelled", return_value=False):
+        yield
+
+
+def test_auto_remediate_revise_full_passes_after_rerun():
+    ctx = {
+        "run_id": "rem1",
+        "module_results": {"solve_lab": _incomplete_solve()},
+        "confirmed_steps": [{"module": "solve_lab", "params": {}, "default_checked": True}],
+        "consecutive_failures": 0,
+        "replan_rounds": 0,
+        "plan": {"steps": []},
+        "decision_log": [],
+        "auto_remediate": True,
+    }
+    events: list[dict] = []
+    calls = {"n": 0}
+
+    def mock_solve(c, p):
+        calls["n"] += 1
+        return _complete_solve()
+
+    orch = RunOrchestrator("rem1", ctx, emit=events.append)
+    orch.completed_modules = ["solve_lab"]
+
+    with patch.dict("agent.executor._MODULE_RUNNERS", {"solve_lab": mock_solve}, clear=False):
+        report = orch.run_verify(auto_remediate=True, max_rounds=1)
+
+    assert report.get("passed") is True
+    assert orch._auto_remediate_rounds == 1
+    assert calls["n"] == 1
+
+    verifications = [e for e in events if e.get("type") == "verification"]
+    assert len(verifications) >= 2
+    assert verifications[-1].get("remediated") is True
+    assert verifications[-1].get("remediate_rounds") == 1
+
+    decisions = [d for d in ctx["decision_log"] if d.get("decision") == "auto_remediate"]
+    assert len(decisions) == 1
+    assert "solve_lab" in decisions[0].get("target", "")
+
+
+def test_auto_remediate_off_no_rerun():
+    ctx = {
+        "run_id": "rem2",
+        "module_results": {"solve_lab": _incomplete_solve()},
+        "confirmed_steps": [{"module": "solve_lab", "default_checked": True}],
+        "consecutive_failures": 0,
+        "replan_rounds": 0,
+        "plan": {"steps": []},
+        "decision_log": [],
+        "auto_remediate": False,
+    }
+    events: list[dict] = []
+    calls = {"n": 0}
+
+    def mock_solve(c, p):
+        calls["n"] += 1
+        return _incomplete_solve()
+
+    orch = RunOrchestrator("rem2", ctx, emit=events.append)
+
+    with patch.dict("agent.executor._MODULE_RUNNERS", {"solve_lab": mock_solve}, clear=False):
+        report = orch.run_verify(auto_remediate=False)
+
+    assert report.get("passed") is False
+    assert orch._auto_remediate_rounds == 0
+    assert calls["n"] == 0
+    assert len([e for e in events if e.get("type") == "verification"]) == 1

@@ -1,0 +1,2059 @@
+"""
+解题能手 - Python后端服务 v2
+整份报告丢给AI + 多种截图策略
+"""
+
+import argparse
+import base64
+import json
+import traceback
+from datetime import datetime, timezone
+import urllib.request
+import zipfile
+from pathlib import Path
+
+from flask import Flask, Response, jsonify, request, stream_with_context
+from flask_cors import CORS
+
+from config import APP_DATA, DOCX_OK, IDE_RENDER_OK, JRE_DIR, PIL_OK, TEMP_DIR, UML_RENDER_OK
+from config import detect_needs_uml
+from log_util import get_log_buffer, loge, logi
+from llm_client import call_ai
+from modules.fill_report import do_fill
+from modules.fix_code import fix_code_from_error
+from modules.parse_report import build_question_from_document, detect_docx_sections, document_format
+from settings_schema import SETTINGS_SCHEMA_VERSION
+from modules.run_code import execute_code, get_java_exe, java_status_info, launch_async_gui
+from modules.screenshot import paths_to_b64, render_ide_screenshot_file, render_terminal_image
+from modules.solve_lab import solve_lab
+from modules.uml import render_uml_diagrams
+from agent.document_store import (
+    resolve_agent_context,
+    resolve_documents,
+    store_from_request_payload,
+    store_parsed_batch,
+)
+from agent.executor import retry_single_step, start_run_async
+from agent.quality import verify_answer
+from agent.understand_plan import understand_and_plan
+from modules.revise_answer import revise_answer
+from agent.parse_documents import parse_documents_list
+from agent.plan_feedback import record_plan_feedback
+from agent.planner import (
+    compute_plan_fingerprint,
+    make_agent_context,
+    plan_from_report,
+    replan_with_answers,
+    verify_plan_fingerprint,
+)
+from agent.sections_config import normalize as normalize_sections_config
+from agent.sections_config import parse_section_brief
+from agent.run_control import (
+    RunBusyError,
+    acquire_run,
+    cancel_run,
+    get_run,
+    iter_events,
+    map_api_error,
+    release_run,
+)
+from agent.user_profile import load_profile, merge_profile, normalize_profile, save_profile, record_revise_tags
+from agent.template_analyzer import prepare_format_spec_for_session
+from modules.parse_answer_template import parse_answer_template
+
+app = Flask(__name__)
+
+
+def _session_format_spec(data: dict, bundle: dict | None = None) -> dict | None:
+    """Resolve format_spec from request body or multi-doc parse bundle."""
+    raw = data.get("format_spec")
+    meta = (bundle or {}).get("metadata") if bundle else None
+    assign = (bundle or {}).get("assignment_text") if bundle else ""
+    if isinstance(bundle, dict) and bundle.get("planner_input_text"):
+        assign = assign or bundle.get("planner_input_text")
+    if raw and isinstance(raw, dict):
+        return prepare_format_spec_for_session(
+            raw,
+            assignment_metadata=meta or data.get("metadata"),
+            assignment_text=assign or data.get("assignment_text") or "",
+        )
+    if isinstance(bundle, dict) and bundle.get("format_spec"):
+        return bundle["format_spec"]
+    return None
+
+
+def _maybe_save_insight(parsed: dict) -> None:
+    """Auto-save LLM self-reported notes to AI_INSIGHTS.md."""
+    notes = (parsed or {}).get("notes", "").strip()
+    if not notes:
+        return
+    try:
+        insights_path = Path(__file__).resolve().parent.parent.parent / "docs" / "AI_INSIGHTS.md"
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        entry = f"\n## {today}\n\n### 自动记录（来自 AI 解题 notes）\n\n{notes}\n"
+        with open(insights_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+        logi("insight", f"已保存 {len(notes)} 字 LLM 自述到 AI_INSIGHTS.md")
+    except Exception:
+        pass  # 静默失败，不影响主流程
+
+
+CORS(app)
+
+# ══════════════════════════════════════════════════════
+# 健康 & 日志接口
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/health")
+def health():
+    logi("health", "ping")
+    return jsonify(
+        {
+            "status": "ok",
+            "docx": DOCX_OK,
+            "pil": PIL_OK,
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+    )
+
+
+@app.route("/api/profile", methods=["GET"])
+def get_profile():
+    profile = load_profile()
+    return jsonify({"profile": profile, "schema_version": SETTINGS_SCHEMA_VERSION})
+
+
+@app.route("/api/profile", methods=["PUT"])
+def put_profile():
+    data = request.json or {}
+    body = data.get("profile") if isinstance(data.get("profile"), dict) else data
+    if not isinstance(body, dict):
+        return jsonify({"error": "需要 profile 对象"}), 400
+    saved = save_profile(body)
+    return jsonify({"profile": saved, "schema_version": SETTINGS_SCHEMA_VERSION})
+
+
+@app.route("/api/template/analyze", methods=["POST"])
+def template_analyze():
+    data = request.json or {}
+    file_data = data.get("file_data") or data.get("template_data")
+    if not file_data:
+        return jsonify({"error": "缺少 file_data（base64 docx）"}), 400
+    file_name = data.get("file_name") or data.get("template_name") or "template.docx"
+    template_type = (data.get("template_type") or "user_sample").strip()
+    try:
+        file_bytes = base64.b64decode(file_data)
+        spec = parse_answer_template(
+            file_bytes,
+            file_name,
+            template_type=template_type,
+            assignment_metadata=data.get("metadata"),
+            assignment_text=data.get("assignment_text") or data.get("report_text") or "",
+        )
+        return jsonify(
+            {
+                "format_spec": spec,
+                "summary": spec.get("summary", ""),
+                "alignment": spec.get("alignment"),
+                "schema_version": SETTINGS_SCHEMA_VERSION,
+            }
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("template/analyze", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/logs")
+def get_logs():
+    n = int(request.args.get("n", 100))
+    buf = get_log_buffer()
+    from config import LOG_FILE
+
+    return jsonify({"logs": buf[-n:], "log_file": str(LOG_FILE)})
+
+
+@app.route("/api/runtime-status", methods=["GET"])
+def runtime_status():
+    from config import get_all_runtime_status, get_diagram_tools_status
+
+    status = get_all_runtime_status()
+    diagram_tools = get_diagram_tools_status()
+    return jsonify({
+        "runtimes": status,
+        "any_available": status["any_available"],
+        "diagram_tools": diagram_tools,
+        "plantuml_jar_ok": diagram_tools["plantuml_jar_ok"],
+        "java_ok": diagram_tools["java_ok"],
+        "graphviz_ok": diagram_tools["graphviz_ok"],
+    })
+
+
+# ══════════════════════════════════════════════════════
+# 报告解析
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/parse-report", methods=["POST"])
+def parse_report_route():
+    data = request.json or {}
+    documents = data.get("documents")
+
+    if documents:
+        try:
+            parsed = parse_documents_list(documents)
+
+            # Store parsed bundles in document_store so subsequent
+            # /api/agent/plan and /api/agent/run can resolve via document_ids.
+            bundles_to_store = parsed.get("_bundles") or []
+            if bundles_to_store:
+                stored_ids = store_parsed_batch(bundles_to_store)
+                parsed["document_ids"] = stored_ids
+                logi("parse", f"cached {len(stored_ids)} document bundle(s) for plan/run")
+
+            # DA4: detect section structure from fill_target docx for UI confirmation
+            sections_detected = []
+            section_map = {}
+            fill_hints = {}
+            report_layout = parsed.get("layout") or ""
+            table_map = (parsed.get("metadata") or {}).get("table_map") or []
+            ft = parsed.get("fill_target") or {}
+            ft_path = ft.get("file_path") or ft.get("fill_docx_path") or ""
+            ft_fmt = ft.get("source_format") or (
+                (parsed.get("metadata") or {}).get("source_format") or ""
+            )
+            if ft_path and ft_fmt == "docx":
+                try:
+                    from pathlib import Path as _Path
+
+                    sd = detect_docx_sections(_Path(ft_path))
+                    sections_detected = sd.get("sections_detected") or []
+                    section_map = sd.get("section_map") or {}
+                    fill_hints = sd.get("fill_hints") or {}
+                    report_layout = sd.get("report_layout") or report_layout
+                    table_map = sd.get("table_map") or table_map
+                    logi(
+                        "parse",
+                        f"multi-doc sections_detected={len(sections_detected)} "
+                        f"layout={report_layout}",
+                    )
+                except Exception as e:
+                    logi("parse", f"multi-doc detect_docx_sections skipped: {e}")
+
+            # IM1: collect image_assets from all parsed docs
+            all_image_assets = []
+            all_image_meta = {}
+            for d in parsed.get("_bundles") or []:
+                imgs = (d.get("metadata") or {}).get("image_assets") or []
+                all_image_assets.extend(imgs)
+                if d.get("metadata", {}).get("image_bundle_meta"):
+                    all_image_meta = d["metadata"]["image_bundle_meta"]
+            if all_image_assets:
+                for i, img in enumerate(all_image_assets):
+                    img["id"] = f"img_{i + 1:03d}"
+                    img["order"] = i
+                all_image_meta["deduped"] = len(all_image_assets)
+
+            return jsonify(
+                {
+                    "documents": parsed["documents"],
+                    "document_ids": parsed["document_ids"],
+                    "fill_target": parsed["fill_target"],
+                    "fill_target_info": parsed.get("fill_target_info"),
+                    "assignment_text": parsed.get("assignment_text", ""),
+                    "layout": parsed.get("layout"),
+                    "split_idx": parsed.get("split_idx"),
+                    "split_at_heading": parsed["fill_target"].get("split_at_heading"),
+                    "planner_input_preview": (parsed.get("planner_input_text") or "")[:500],
+                    "metadata": parsed.get("metadata"),
+                    "question": parsed.get("question"),
+                    "questions": [parsed["question"]] if parsed.get("question") else [],
+                    "needs_uml": parsed.get("needs_uml", False),
+                    "warnings": parsed.get("warnings") or [],
+                    "format_spec": parsed.get("format_spec"),
+                    "format_spec_source_id": parsed.get("format_spec_source_id"),
+                    "sections_detected": sections_detected,
+                    "section_map": section_map,
+                    "fill_hints": fill_hints,
+                    "report_layout": report_layout,
+                    "table_map": table_map,
+                    "image_assets": all_image_assets,
+                    "image_bundle_meta": all_image_meta,
+                    "runtimes_available": _runtimes_available_fields(),
+                    "schema_version": SETTINGS_SCHEMA_VERSION,
+                }
+            )
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            loge("parse", traceback.format_exc())
+            return jsonify({"error": str(e)}), 500
+
+    file_bytes = base64.b64decode(data.get("file_data", ""))
+    file_name = data.get("file_name", "report.docx")
+
+    try:
+        tmp = TEMP_DIR / file_name
+        tmp.write_bytes(file_bytes)
+        logi("parse", f"{file_name} ({len(file_bytes)} bytes)")
+
+        question, metadata, full_text, warnings = build_question_from_document(tmp, file_name)
+        logi(
+            "parse",
+            f"提取文本 len={len(full_text)} 表格元数据键={list(metadata.keys())} warnings={len(warnings)}",
+        )
+
+        # DA4: detect section structure for UI confirmation
+        sections_data = {}
+        src_fmt = metadata.get("source_format") or document_format(file_name)
+        if src_fmt == "docx":
+            try:
+                sections_data = detect_docx_sections(tmp)
+                logi(
+                    "parse",
+                    f"sections_detected={len(sections_data.get('sections_detected') or [])} "
+                    f"layout={sections_data.get('report_layout') or 'default'}",
+                )
+            except Exception as e:
+                logi("parse", f"detect_docx_sections skipped: {e}")
+
+        diagram_needs = (
+            detect_needs_uml(full_text, metadata)
+            if UML_RENDER_OK
+            else {"needs_uml": False, "needs_dfd": False, "kinds": [], "evidence": ""}
+        )
+        needs_uml = bool(diagram_needs.get("needs_uml"))
+        fill_export = {
+            "source_format": src_fmt,
+            "export_format": "docx",
+            "fill_strategy": "generate_docx" if src_fmt == "pdf" else "docx",
+            "fill_docx_from": "generated" if src_fmt == "pdf" else "docx",
+        }
+        if src_fmt == "pdf":
+            fill_export["export_message"] = (
+                "原版式 PDF 无法直接填回，已按解析出的章节生成 Word 并写入内容"
+            )
+        return jsonify(
+            {
+                "questions": [question],
+                "total": 1,
+                "metadata": metadata,
+                "needs_uml": needs_uml,
+                "warnings": warnings,
+                "fill_target": fill_export,
+                "sections_detected": sections_data.get("sections_detected") or [],
+                "section_map": sections_data.get("section_map") or {},
+                "fill_hints": sections_data.get("fill_hints") or {},
+                "report_layout": sections_data.get("report_layout") or metadata.get("report_layout") or "",
+                "table_map": sections_data.get("table_map") or metadata.get("table_map") or [],
+                "image_assets": question.get("image_assets") or metadata.get("image_assets") or [],
+                "image_bundle_meta": question.get("image_bundle_meta") or metadata.get("image_bundle_meta") or {},
+                "runtimes_available": _runtimes_available_fields(),
+                "schema_version": SETTINGS_SCHEMA_VERSION,
+            }
+        )
+    except Exception as e:
+        loge("parse", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+def _runtimes_available_fields():
+    from config import get_all_runtime_status
+    rt = get_all_runtime_status()
+    return {k: rt[k]["available"] for k in ["python", "java", "c", "node"] if rt[k]["available"]}
+
+
+# ══════════════════════════════════════════════════════
+# Agent 计划（Phase 1.3 — 单文档，不接 Electron Step2）
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/agent/parse-section-brief", methods=["POST"])
+def agent_parse_section_brief():
+    data = request.json or {}
+    api_key = data.get("api_key", "")
+    if not api_key:
+        return jsonify({"error": "未填写API Key"}), 400
+    settings = {
+        "api_key": api_key,
+        "provider": data.get("provider", "deepseek"),
+        "model": data.get("model", "deepseek-chat"),
+        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+    }
+    try:
+        result = parse_section_brief(
+            data.get("input") or data.get("text") or "",
+            settings=settings,
+            section_id=data.get("section_id") or "",
+        )
+        return jsonify({**result, "schema_version": SETTINGS_SCHEMA_VERSION})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("agent/parse-section-brief", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/agent/plan/clarify", methods=["POST"])
+def agent_plan_clarify():
+    data = request.json or {}
+    answers = data.get("clarification_answers") or data.get("answers") or {}
+    steps_in = data.get("steps") or (data.get("plan") or {}).get("steps") or []
+    document_ids = [str(x) for x in (data.get("document_ids") or [])]
+    sections_config = data.get("sections_config")
+
+    try:
+        if document_ids:
+            doc_ctx = resolve_agent_context(document_ids)
+            report_text = doc_ctx["report_text"]
+            metadata = doc_ctx["metadata"]
+            question = doc_ctx["question"]
+            planner_input = doc_ctx["planner_input_text"]
+            split_idx = doc_ctx.get("split_idx")
+            layout = doc_ctx.get("layout")
+        else:
+            report_text = (data.get("report_text") or "").strip()
+            metadata = data.get("metadata") or {}
+            question = data.get("question") or {}
+            planner_input = report_text
+            split_idx = data.get("split_idx")
+            layout = data.get("layout")
+
+        profile = normalize_profile(
+            merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
+        )
+        settings = {
+            "api_key": data.get("api_key", ""),
+            "provider": data.get("provider", "deepseek"),
+            "model": data.get("model", "deepseek-chat"),
+            "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+        }
+        format_spec = _session_format_spec(data)
+
+        ctx = make_agent_context(
+            report_text,
+            settings,
+            profile=profile,
+            metadata=metadata,
+            question=question,
+            plan={"steps": steps_in, "plan_fingerprint": data.get("plan_fingerprint", "")},
+            format_spec=format_spec,
+        )
+        ctx["document_ids"] = document_ids
+        if format_spec:
+            ctx["format_spec"] = format_spec
+        ctx["planner_input_text"] = planner_input
+        ctx["split_idx"] = split_idx
+        ctx["layout"] = layout
+        if sections_config:
+            ctx["sections_config"] = sections_config
+            norm = normalize_sections_config(sections_config)
+            ctx["fill_scope"] = norm["fill_scope"]
+            ctx["user_content"] = norm["user_content"]
+            ctx["teacher_constraints"] = norm["teacher_constraints"]
+
+        plan = replan_with_answers(ctx, answers, settings=settings)
+        return jsonify(
+            {
+                "steps": plan.get("steps", []),
+                "plan_fingerprint": plan.get("plan_fingerprint"),
+                "clarifications": plan.get("clarifications", []),
+                "decision_log": plan.get("decision_log", []),
+                "schema_version": SETTINGS_SCHEMA_VERSION,
+            }
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("agent/plan/clarify", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/agent/plan/feedback", methods=["POST"])
+def agent_plan_feedback():
+    """Record user plan edits (checkbox/order) for history; no profile learning."""
+    data = request.json or {}
+    baseline = (
+        data.get("baseline_steps")
+        or data.get("original_steps")
+        or (data.get("plan") or {}).get("steps")
+        or []
+    )
+    confirmed = (
+        data.get("steps")
+        or data.get("confirmed_steps")
+        or data.get("user_steps")
+        or []
+    )
+    plan_fingerprint = (data.get("plan_fingerprint") or "").strip()
+    document_ids = [str(x) for x in (data.get("document_ids") or [])]
+
+    try:
+        apply_to_profile = bool(data.get("apply_to_profile", False))
+        profile = normalize_profile(
+            merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
+        )
+        result = record_plan_feedback(
+            baseline,
+            confirmed,
+            plan_fingerprint=plan_fingerprint,
+            document_ids=document_ids or None,
+            apply_to_profile=apply_to_profile,
+            profile=profile,
+        )
+        return jsonify({**result, "schema_version": SETTINGS_SCHEMA_VERSION})
+    except Exception as e:
+        loge("agent/plan/feedback", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/agent/plan", methods=["POST"])
+def agent_plan():
+    data = request.json or {}
+
+    api_key = data.get("api_key", "")
+    provider = data.get("provider", "deepseek")
+    model = data.get("model", "deepseek-chat")
+    custom_url = data.get("custom_url", "") or data.get("customUrl", "")
+    profile = normalize_profile(
+        merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
+    )
+    run_mode = (data.get("run_mode") or "standard").strip().lower()
+    output_mode = (data.get("output_mode") or "deliverable").strip().lower()
+
+    if not api_key:
+        return jsonify({"error": "未填写API Key"}), 400
+
+    settings = {
+        "api_key": api_key,
+        "provider": provider,
+        "model": model,
+        "custom_url": custom_url,
+    }
+
+    try:
+        document_ids, bundle = store_from_request_payload(data)
+        format_spec = _session_format_spec(data, bundle if isinstance(bundle, dict) else None)
+        sections_config = data.get("sections_config")
+        sections_norm = normalize_sections_config(sections_config) if sections_config else None
+
+        if isinstance(bundle, dict) and bundle.get("planner_input_text"):
+            report_text = bundle.get("report_text") or ""
+            planner_input = bundle["planner_input_text"]
+            metadata = dict(bundle.get("metadata") or {})
+            question = bundle.get("question") or {}
+            warnings = bundle.get("warnings") or []
+            split_idx = bundle.get("split_idx")
+            layout = bundle.get("layout")
+            assignment_text = bundle.get("assignment_text", "")
+            fill_target = bundle.get("fill_target")
+            documents_summary = bundle.get("documents")
+        else:
+            report_text = bundle["report_text"]
+            planner_input = bundle.get("planner_input_text") or report_text
+            metadata = dict(bundle.get("metadata") or {})
+            question = bundle.get("question") or {}
+            warnings = bundle.get("warnings") or []
+            split_idx = bundle.get("split_idx")
+            layout = bundle.get("layout")
+            assignment_text = bundle.get("assignment_text", "")
+            fill_target = None
+            documents_summary = None
+
+        metadata["document_ids"] = document_ids
+        needs_uml = bool(
+            data.get("include_uml")
+            or data.get("includeUml")
+            or bundle.get("needs_uml")
+        )
+        if sections_norm and sections_norm.get("global", {}).get("include_uml"):
+            needs_uml = True
+        diagram_needs = (
+            detect_needs_uml(planner_input, metadata)
+            if UML_RENDER_OK
+            else {"needs_uml": False, "needs_dfd": False, "kinds": [], "evidence": ""}
+        )
+        if not needs_uml:
+            needs_uml = bool(diagram_needs.get("needs_uml"))
+
+        if run_mode == "deep":
+            understand, plan = understand_and_plan(
+                report_text,
+                settings=settings,
+                profile=profile,
+                metadata=metadata,
+                planner_input_text=planner_input,
+                sections_config=sections_config,
+                document_ids=document_ids,
+                split_idx=split_idx,
+                assignment_text=assignment_text,
+                format_spec=format_spec,
+            )
+        else:
+            understand = None
+            plan = plan_from_report(
+                report_text,
+                settings=settings,
+                profile=profile,
+                metadata=metadata,
+                needs_uml=needs_uml,
+                diagram_needs=diagram_needs,
+                planner_input_text=planner_input,
+                sections_config=sections_config,
+                document_ids=document_ids,
+                split_idx=split_idx,
+                format_spec=format_spec,
+            )
+        steps = plan.get("steps", [])
+        fingerprint = plan.get("plan_fingerprint") or compute_plan_fingerprint(
+            planner_input,
+            steps,
+            document_ids=document_ids,
+            sections_config=sections_config,
+            split_idx=split_idx,
+        )
+        plan["plan_fingerprint"] = fingerprint
+
+        ctx = make_agent_context(
+            report_text,
+            settings,
+            profile=profile,
+            metadata=metadata,
+            question=question,
+            plan=plan,
+            format_spec=format_spec,
+        )
+        ctx["document_ids"] = document_ids
+        ctx["run_mode"] = run_mode
+        ctx["output_mode"] = output_mode
+        from modules.user_constraints import normalize_user_constraints
+
+        user_constraints = normalize_user_constraints(
+            data.get("user_constraints") or data.get("userConstraints")
+        )
+        if user_constraints:
+            ctx["user_constraints"] = user_constraints
+        prov_custom = (data.get("provenance_custom_label") or data.get("provenanceCustomLabel") or "").strip()
+        if prov_custom:
+            ctx["provenance_custom_label"] = prov_custom
+        if format_spec:
+            ctx["format_spec"] = format_spec
+        if understand:
+            ctx["understand"] = understand
+        ctx["planner_input_text"] = planner_input
+        ctx["split_idx"] = split_idx
+        ctx["layout"] = layout
+        ctx["assignment_text"] = assignment_text
+        if sections_norm:
+            ctx["sections_config"] = sections_config
+            ctx["fill_scope"] = sections_norm["fill_scope"]
+            ctx["user_content"] = sections_norm["user_content"]
+            ctx["teacher_constraints"] = sections_norm["teacher_constraints"]
+
+        return jsonify(
+            {
+                "steps": steps,
+                "plan_fingerprint": fingerprint,
+                "document_ids": document_ids,
+                "clarifications": plan.get("clarifications", []),
+                "prompt_version": plan.get("prompt_version", ""),
+                "decision_log": plan.get("decision_log", []),
+                "run_mode": run_mode,
+                "understand": understand,
+                "warnings": warnings,
+                "layout": layout,
+                "split_idx": split_idx,
+                "output_mode": output_mode,
+                "assignment_text_len": len(assignment_text or ""),
+                "documents": documents_summary,
+                "fill_target": fill_target,
+                "format_spec": format_spec,
+                "format_spec_summary": (format_spec or {}).get("summary"),
+                "sections_normalized": (
+                    {
+                        "fill_scope": sections_norm["fill_scope"],
+                        "teacher_rules_count": len(
+                            (sections_norm.get("teacher_constraints") or {}).get("rules") or []
+                        ),
+                    }
+                    if sections_norm
+                    else None
+                ),
+                "agent_context": {
+                    "schema_version": ctx.get("schema_version"),
+                    "metadata": ctx.get("metadata"),
+                    "prompt_versions": ctx.get("prompt_versions"),
+                    "document_ids": document_ids,
+                },
+                "schema_version": SETTINGS_SCHEMA_VERSION,
+            }
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("agent/plan", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/agent/run", methods=["POST"])
+def agent_run():
+    data = request.json or {}
+    api_key = data.get("api_key", "")
+    if not api_key:
+        return jsonify({"error": "未填写API Key"}), 400
+
+    run_mode = (data.get("run_mode") or "standard").strip().lower()
+    output_mode_run = (data.get("output_mode") or "deliverable").strip().lower()
+    plan_fingerprint = (data.get("plan_fingerprint") or "").strip()
+    steps_in = data.get("steps") or (data.get("plan") or {}).get("steps") or []
+    document_ids = [str(x) for x in (data.get("document_ids") or [])]
+
+    settings = {
+        "api_key": api_key,
+        "provider": data.get("provider", "deepseek"),
+        "model": data.get("model", "deepseek-chat"),
+        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+    }
+    profile = normalize_profile(
+        merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
+    )
+
+    try:
+        if not document_ids:
+            document_ids, bundle = store_from_request_payload(data)
+            doc_ctx = (
+                bundle
+                if isinstance(bundle, dict) and bundle.get("planner_input_text")
+                else {
+                    "report_text": bundle.get("report_text"),
+                    "metadata": bundle.get("metadata"),
+                    "question": bundle.get("question"),
+                    "planner_input_text": bundle.get("report_text"),
+                    "split_idx": bundle.get("split_idx"),
+                }
+            )
+        else:
+            doc_ctx = resolve_agent_context(document_ids)
+
+        format_spec = _session_format_spec(data, doc_ctx if isinstance(doc_ctx, dict) else None)
+
+        report_text = doc_ctx["report_text"]
+        metadata = dict(doc_ctx.get("metadata") or {})
+        question = doc_ctx.get("question") or {}
+
+        for key in (
+            "sections_detected",
+            "section_map",
+            "fill_hints",
+            "report_layout",
+            "semantic_overrides",
+        ):
+            val = data.get(key)
+            if val:
+                metadata[key] = val
+
+        if not steps_in:
+            return jsonify({"error": "缺少 steps 或 plan.steps"}), 400
+
+        sections_config = data.get("sections_config") or {}
+        sections_norm = normalize_sections_config(sections_config) if sections_config else None
+
+        ctx = make_agent_context(
+            report_text,
+            settings,
+            profile=profile,
+            metadata=metadata,
+            question=question,
+            plan={"steps": steps_in, "plan_fingerprint": plan_fingerprint},
+            format_spec=format_spec,
+        )
+        ctx["document_ids"] = document_ids
+        ctx["confirmed_steps"] = steps_in
+        if format_spec:
+            ctx["format_spec"] = format_spec
+        ctx["sections_config"] = sections_config
+        ctx["planner_input_text"] = doc_ctx.get("planner_input_text") or report_text
+        ctx["split_idx"] = doc_ctx.get("split_idx")
+        ctx["layout"] = doc_ctx.get("layout")
+        ctx["assignment_text"] = doc_ctx.get("assignment_text", "")
+        if doc_ctx.get("fill_target_info"):
+            ctx["fill_target_info"] = doc_ctx["fill_target_info"]
+        if doc_ctx.get("fill_target"):
+            ctx["fill_target"] = doc_ctx["fill_target"]
+        if sections_norm:
+            ctx["fill_scope"] = sections_norm["fill_scope"]
+            ctx["user_content"] = sections_norm["user_content"]
+            ctx["teacher_constraints"] = sections_norm["teacher_constraints"]
+        ctx["run_mode"] = run_mode
+        ctx["output_mode"] = output_mode_run
+        from modules.user_constraints import normalize_user_constraints
+
+        user_constraints_run = normalize_user_constraints(
+            data.get("user_constraints") or data.get("userConstraints")
+        )
+        if user_constraints_run:
+            ctx["user_constraints"] = user_constraints_run
+        prov_custom_run = (data.get("provenance_custom_label") or data.get("provenanceCustomLabel") or "").strip()
+        if prov_custom_run:
+            ctx["provenance_custom_label"] = prov_custom_run
+        ctx["auto_remediate"] = bool(data.get("auto_remediate", False))
+        ctx["replan_rounds"] = 0
+        ctx["understand"] = data.get("understand") or {}
+        if data.get("module_results"):
+            ctx["module_results"] = data["module_results"]
+        if data.get("dirty_modules") is not None:
+            ctx["dirty_modules"] = list(data.get("dirty_modules") or [])
+        if data.get("fill_sections"):
+            ctx["fill_sections"] = data["fill_sections"]
+
+        ok, expected = verify_plan_fingerprint(ctx, plan_fingerprint, steps_in)
+        if plan_fingerprint and not ok:
+            return jsonify(
+                {
+                    "error": "计划已过期，请重新生成计划",
+                    "stale_plan": True,
+                    "plan_fingerprint": expected,
+                }
+            ), 409
+
+        use_fallback = bool(data.get("fallback_on_failure", True))
+
+        try:
+            run_id = acquire_run(data.get("run_id"))
+        except RunBusyError as e:
+            return jsonify(
+                {
+                    "error": str(e),
+                    "error_code": "run_busy",
+                    "active_run_id": e.active_run_id,
+                }
+            ), 409
+
+        start_run_async(
+            run_id,
+            ctx,
+            steps_in,
+            use_fallback=use_fallback,
+            run_mode=run_mode,
+        )
+        return jsonify(
+            {
+                "run_id": run_id,
+                "status": "running",
+                "output_mode": output_mode_run,
+                "events_url": f"/api/agent/events?run_id={run_id}",
+                "schema_version": SETTINGS_SCHEMA_VERSION,
+            }
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        loge("agent/run", traceback.format_exc())
+        mapped = map_api_error(e)
+        return jsonify(mapped), mapped.get("http_status", 500)
+
+
+@app.route("/api/agent/events")
+def agent_events():
+    run_id = request.args.get("run_id", "")
+    if not run_id or not get_run(run_id):
+        return jsonify({"error": "run_id 无效或已结束"}), 404
+
+    def generate():
+        for ev in iter_events(run_id):
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.route("/api/agent/verify", methods=["POST"])
+def agent_verify():
+    """Rule-based verification on module_results (Phase 2b B3)."""
+    data = request.json or {}
+    ctx = data.get("agent_context") or data.get("ctx") or {}
+    if not ctx.get("module_results") and data.get("module_results"):
+        ctx["module_results"] = data["module_results"]
+    if data.get("confirmed_steps"):
+        ctx["confirmed_steps"] = data["confirmed_steps"]
+    if data.get("steps"):
+        ctx["confirmed_steps"] = data["steps"]
+    if data.get("answer_template_text"):
+        ctx["answer_template_text"] = data["answer_template_text"]
+    sections_config = data.get("sections_config")
+    if sections_config:
+        norm = normalize_sections_config(sections_config)
+        ctx["teacher_constraints"] = norm["teacher_constraints"]
+        ctx["user_content"] = norm["user_content"]
+    try:
+        report = verify_answer(ctx, answer_template_text=data.get("answer_template_text") or "")
+        return jsonify({"verification_report": report, "schema_version": SETTINGS_SCHEMA_VERSION})
+    except Exception as e:
+        loge("agent/verify", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/agent/revise", methods=["POST"])
+def agent_revise():
+    """Scoped revise_answer (Phase 2b B3)."""
+    data = request.json or {}
+    api_key = data.get("api_key", "")
+    if not api_key:
+        return jsonify({"error": "未填写API Key"}), 400
+
+    settings = {
+        "api_key": api_key,
+        "provider": data.get("provider", "deepseek"),
+        "model": data.get("model", "deepseek-chat"),
+        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+    }
+    parsed = data.get("parsed") or {}
+    solve = data.get("solve_data") or {}
+    if not parsed and solve:
+        parsed = solve.get("parsed") or {}
+
+    scope = data.get("scope") or data.get("sections") or ["full"]
+    feedback = data.get("feedback") or data.get("user_feedback") or ""
+    if not feedback.strip():
+        return jsonify({"error": "请填写修订反馈"}), 400
+
+    profile = normalize_profile(
+        merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
+    )
+
+    try:
+        from agent.executor_dirty import (
+            apply_revise_to_module_results,
+            mark_dirty_from_revise,
+        )
+
+        result = revise_answer(
+            settings,
+            parsed=parsed,
+            report_excerpt=data.get("report_excerpt") or data.get("report_text") or "",
+            scope=scope,
+            feedback=feedback,
+            verification_report=data.get("verification_report"),
+            format_spec=data.get("format_spec"),
+        )
+        merged = result.get("parsed") or parsed
+        changed = result.get("changed_fields") or []
+        if solve:
+            solve = {
+                **solve,
+                "parsed": merged,
+                "code": merged.get("code") or solve.get("code"),
+                "language": merged.get("language") or solve.get("language"),
+                "type": solve.get("type") or "lab_report",
+            }
+        else:
+            solve = {
+                "type": "lab_report",
+                "parsed": merged,
+                "code": merged.get("code") or "",
+                "language": merged.get("language") or "java",
+            }
+
+        ctx = data.get("agent_context") or data.get("ctx") or {}
+        if data.get("module_results"):
+            ctx["module_results"] = data["module_results"]
+        ctx.setdefault("module_results", {})
+        apply_revise_to_module_results(ctx, solve, changed_fields=changed)
+        dirty_modules = mark_dirty_from_revise(
+            ctx, changed_fields=changed, scope=scope
+        )
+        fill_sections = ctx.get("fill_sections")
+
+        if profile.get("optimize_plan_from_usage"):
+            tags = [str(s) for s in (scope if isinstance(scope, list) else [scope]) if s]
+            if feedback.strip():
+                tags.append("feedback")
+            updated = record_revise_tags(profile, tags)
+            save_profile(updated)
+
+        return jsonify(
+            {
+                "parsed": merged,
+                "solve_data": solve,
+                "changed_fields": changed,
+                "dirty_modules": dirty_modules,
+                "fill_sections": fill_sections,
+                "module_results": {
+                    "solve_lab": ctx["module_results"].get("solve_lab"),
+                },
+                "schema_version": SETTINGS_SCHEMA_VERSION,
+            }
+        )
+    except Exception as e:
+        loge("agent/revise", traceback.format_exc())
+        mapped = map_api_error(e)
+        return jsonify(mapped), mapped.get("http_status", 500)
+
+
+@app.route("/api/agent/cancel", methods=["POST"])
+def agent_cancel():
+    data = request.json or {}
+    run_id = data.get("run_id", "")
+    if not run_id:
+        return jsonify({"error": "缺少 run_id"}), 400
+    if cancel_run(run_id):
+        release_run(run_id, "cancelled")
+        return jsonify({"success": True, "run_id": run_id, "status": "cancelled"})
+    return jsonify({"error": "run_id 不存在或已结束"}), 404
+
+
+@app.route("/api/agent/retry-step", methods=["POST"])
+def agent_retry_step():
+    data = request.json or {}
+    run_id = data.get("run_id", "")
+    module_id = data.get("module_id") or data.get("module", "")
+    if not run_id or not module_id:
+        return jsonify({"error": "缺少 run_id 或 module_id"}), 400
+
+    state = get_run(run_id)
+    if not state:
+        return jsonify({"error": "run_id 不存在"}), 404
+
+    ctx = data.get("agent_context") or data.get("ctx") or {}
+    if not ctx.get("settings"):
+        ctx["settings"] = {
+            "api_key": data.get("api_key", ""),
+            "provider": data.get("provider", "deepseek"),
+            "model": data.get("model", "deepseek-chat"),
+            "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+        }
+    ctx["run_id"] = run_id
+    ctx["confirmed_steps"] = data.get("steps") or ctx.get("confirmed_steps") or []
+
+    try:
+        retry_single_step(run_id, ctx, module_id)
+        return jsonify({"success": True, "run_id": run_id, "module_id": module_id})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        mapped = map_api_error(e)
+        return jsonify(mapped), mapped.get("http_status", 500)
+
+
+# ══════════════════════════════════════════════════════
+# AI 解题
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/solve", methods=["POST"])
+def solve():
+    data = request.json
+    question = data.get("question", {})
+    api_key = data.get("api_key", "")
+    provider = data.get("provider", "deepseek")
+    model = data.get("model", "deepseek-chat")
+    custom_url = data.get("custom_url", "")
+    code_language = data.get("code_language", "")
+    include_code = data.get("include_code", True)
+    include_uml = data.get("include_uml", False)
+
+    if not api_key:
+        return jsonify({"error": "未填写API Key"}), 400
+
+    if code_language:
+        question = {**question, "preferred_lang": code_language}
+
+    format_spec = _session_format_spec(data)
+
+    try:
+        logi(
+            "ai",
+            f'解题 type={question.get("type")} provider={provider} model={model} lang={code_language}',
+        )
+        result = solve_lab(
+            api_key,
+            provider,
+            model,
+            question,
+            custom_url=custom_url,
+            include_uml=include_uml,
+            format_spec=format_spec,
+        )
+        result["include_code"] = include_code
+        result["include_uml"] = include_uml
+        _maybe_save_insight(result.get("parsed", {}))
+        logi("ai", f'解题成功 answer_len={len(result.get("answer", ""))}')
+        return jsonify(result)
+    except Exception as e:
+        loge("ai", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/render-uml", methods=["POST"])
+def render_uml_api():
+    if not UML_RENDER_OK:
+        return jsonify({"error": "uml_render 模块不可用"}), 500
+    data = request.json or {}
+    diagrams = data.get("diagrams") or []
+    if not diagrams and data.get("plantuml"):
+        diagrams = [{"title": data.get("title", "UML"), "plantuml": data["plantuml"]}]
+    allow_online = data.get("allow_online", True)
+    try:
+        out = render_uml_diagrams(
+            diagrams,
+            allow_online=allow_online,
+            code=data.get("code") or "",
+            language=data.get("language") or "java",
+        )
+        logi(
+            "uml",
+            f'渲染 {len(out["images_b64"])}/{len(diagrams)} 张, errors={len(out["errors"])}',
+        )
+        return jsonify(out)
+    except Exception as e:
+        loge("uml", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════
+# 代码执行
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/java-status")
+def java_status():
+    return jsonify(java_status_info())
+
+
+@app.route("/api/download-jre", methods=["POST"])
+def download_jre():
+    JRE_URL = (
+        "https://github.com/adoptium/temurin21-binaries/releases/download/"
+        "jdk-21.0.3%2B9/OpenJDK21U-jre_x64_windows_hotspot_21.0.3_9.zip"
+    )
+    zip_path = APP_DATA / "jre_download.zip"
+    try:
+        logi("jre", "开始下载JRE...")
+        urllib.request.urlretrieve(JRE_URL, str(zip_path))
+        logi("jre", "解压中...")
+        JRE_DIR.mkdir(exist_ok=True)
+        with zipfile.ZipFile(str(zip_path), "r") as z:
+            z.extractall(str(JRE_DIR))
+        zip_path.unlink(missing_ok=True)
+        java = get_java_exe()
+        logi("jre", f"安装完成: {java}")
+        if java:
+            return jsonify({"success": True, "java_path": java})
+        return jsonify({"success": False, "error": "解压后未找到java.exe"}), 500
+    except Exception as e:
+        loge("jre", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/run-code-multi", methods=["POST"])
+def run_code_multi():
+    from modules.preflight import _check_execution_pattern
+    from modules.run_code import execute_multi_file
+
+    data = request.json or {}
+    files = data.get("files") or []
+    language = data.get("language") or "python"
+    main_file = data.get("main_file") or ""
+
+    if not files:
+        return jsonify({"output": "无文件", "error": True})
+
+    if not main_file:
+        main_file = files[0].get("name") or files[0].get("filename") or "main.py"
+
+    # Preflight check on combined code
+    combined_code = "\n".join(f.get("code") or f.get("content") or "" for f in files)
+    if combined_code.strip():
+        exec_check = _check_execution_pattern(combined_code, language)
+        if not exec_check.get("ok"):
+            logi("run_multi", f"blocked by preflight: pattern={exec_check.get('pattern')}")
+            return jsonify({
+                "output": exec_check.get("message", "代码无法安全执行"),
+                "error": False,
+                "blocked_by_preflight": True,
+                "preflight_pattern": exec_check.get("pattern"),
+                "preflight_message": exec_check.get("message"),
+            })
+
+    try:
+        logi("run_multi", f"执行 multi lang={language} files={len(files)} main={main_file}")
+        output, is_error = execute_multi_file(files, language, main_file)
+        logi("run_multi", f"完成 error={is_error} out_len={len(output)}")
+        return jsonify({"output": output, "error": is_error})
+    except Exception as e:
+        loge("run_multi", traceback.format_exc())
+        return jsonify({"output": f"[ERR] {e}", "error": True})
+
+
+@app.route("/api/run-code", methods=["POST"])
+def run_code():
+    from modules.preflight import _check_execution_pattern
+
+    data = request.json
+    code = data.get("code", "")
+    language = data.get("language", "python")
+    has_gui = data.get("has_gui", False)
+
+    if language == "java" and not get_java_exe():
+        return jsonify(
+            {
+                "output": "",
+                "error": False,
+                "needs_jre": True,
+                "message": "需要下载Java运行环境（约50MB）",
+            }
+        )
+
+    # P0B: preflight code execution pattern before running
+    if code.strip():
+        exec_check = _check_execution_pattern(code, language)
+        if not exec_check.get("ok"):
+            logi("run", f"blocked by preflight: pattern={exec_check.get('pattern')}")
+            return jsonify({
+                "output": exec_check.get("message", "代码无法安全执行"),
+                "error": False,
+                "needs_jre": False,
+                "blocked_by_preflight": True,
+                "preflight_pattern": exec_check.get("pattern"),
+                "preflight_message": exec_check.get("message"),
+            })
+
+    try:
+        logi("run", f"执行 lang={language} len={len(code)} gui={has_gui}")
+        output, is_error = execute_code(code, language)
+        logi("run", f"完成 error={is_error} out_len={len(output)}")
+        return jsonify({"output": output, "error": is_error, "needs_jre": False})
+    except Exception as e:
+        loge("run", traceback.format_exc())
+        return jsonify({"output": f"[ERR] {e}", "error": True, "needs_jre": False})
+
+
+# ══════════════════════════════════════════════════════
+# 截图
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/screenshot-terminal", methods=["POST"])
+def screenshot_terminal():
+    data = request.json
+    text = data.get("text", "")
+    title = data.get("title", "Terminal")
+    code = data.get("code", "")
+    language = data.get("language", "python")
+    style = data.get("style", "ide")
+
+    try:
+        if style == "ide" and IDE_RENDER_OK and (code or text):
+            paths = render_ide_screenshot_file(
+                code,
+                text,
+                language,
+                filename=data.get("filename", ""),
+                chrome_style=data.get("chrome_style", "windows"),
+            )
+            img_path = paths[0]
+        else:
+            img_path = render_terminal_image(text, title)
+        img_b64 = base64.b64encode(Path(img_path).read_bytes()).decode()
+        return jsonify(
+            {"success": True, "image_b64": img_b64, "path": img_path, "style": style}
+        )
+    except Exception as e:
+        loge("screenshot", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/screenshot-screen", methods=["POST"])
+def screenshot_screen():
+    data = request.json
+    delay = data.get("delay", 2)
+
+    try:
+        import time
+
+        time.sleep(delay)
+        try:
+            import pyautogui
+
+            img = pyautogui.screenshot()
+        except ImportError:
+            try:
+                import PIL.ImageGrab
+
+                img = PIL.ImageGrab.grab()
+            except Exception:
+                raise Exception("截图功能需要安装 pyautogui: pip install pyautogui")
+
+        out_path = str(TEMP_DIR / "screen_screenshot.png")
+        img.save(out_path)
+        img_b64 = base64.b64encode(Path(out_path).read_bytes()).decode()
+        logi("screenshot", f"屏幕截图: {out_path}")
+        return jsonify({"success": True, "image_b64": img_b64, "path": out_path})
+    except Exception as e:
+        loge("screenshot", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/run-and-screenshot", methods=["POST"])
+def run_and_screenshot():
+    from modules.preflight import _check_execution_pattern
+
+    data = request.json
+    code = data.get("code", "")
+    language = data.get("language", "java")
+    has_gui = data.get("has_gui", False)
+    chrome_style = data.get("chrome_style", "windows")
+    terminal_profile = data.get("terminal_profile", "")
+    terminal_cwd = data.get("terminal_cwd", "")
+    terminal_custom = data.get("terminal_custom_prompt", "")
+    full_layout = data.get("full_layout", True)
+
+    if language == "java" and not get_java_exe():
+        return jsonify({"needs_jre": True})
+
+    # P0B: preflight code execution pattern before running
+    if code.strip():
+        exec_check = _check_execution_pattern(code, language)
+        if not exec_check.get("ok"):
+            logi("run_screenshot", f"blocked by preflight: pattern={exec_check.get('pattern')}")
+            return jsonify({
+                "output": exec_check.get("message", "代码无法安全执行"),
+                "is_error": False,
+                "blocked_by_preflight": True,
+                "preflight_pattern": exec_check.get("pattern"),
+                "preflight_message": exec_check.get("message"),
+            })
+
+    try:
+        output, is_error = execute_code(code, language)
+        img_paths = []
+        images_b64 = []
+        img_b64 = None
+        img_path = None
+
+        if has_gui:
+            import time
+
+            launch_async_gui(code, language)
+            time.sleep(3)
+            try:
+                import pyautogui
+
+                img = pyautogui.screenshot()
+                img_path = str(TEMP_DIR / "gui_screenshot.png")
+                img.save(img_path)
+                img_b64 = base64.b64encode(Path(img_path).read_bytes()).decode()
+            except Exception as e:
+                img_b64 = None
+                loge("screenshot", f"GUI截图失败: {e}")
+        else:
+            img_paths = render_ide_screenshot_file(
+                code,
+                output,
+                language,
+                chrome_style=chrome_style,
+                terminal_profile=terminal_profile,
+                terminal_cwd=terminal_cwd,
+                terminal_custom=terminal_custom,
+                full_layout=full_layout,
+            )
+            images_b64 = paths_to_b64(img_paths)
+            img_b64 = images_b64[0] if images_b64 else None
+            img_path = img_paths[0] if img_paths else None
+
+        return jsonify(
+            {
+                "output": output,
+                "is_error": is_error,
+                "image_b64": img_b64,
+                "images_b64": images_b64 if not has_gui else ([img_b64] if img_b64 else []),
+                "page_count": len(images_b64) if not has_gui else (1 if img_b64 else 0),
+                "image_path": img_path,
+                "image_paths": img_paths if not has_gui else None,
+            }
+        )
+    except Exception as e:
+        loge("run_screenshot", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════
+# 答案交付物（V5）
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/deliverable/export", methods=["POST"])
+def deliverable_export():
+    """Export LabDeliverable: markdown / json / docx / code_zip / diagrams_zip."""
+    from modules.deliverable import build_deliverable, export_deliverable
+
+    data = request.json or {}
+    dlv = data.get("deliverable")
+    if not dlv:
+        ctx = dict(data.get("agent_context") or {})
+        if data.get("module_results"):
+            ctx = {**ctx, "module_results": data["module_results"]}
+        prov_label = (data.get("provenance_custom_label") or data.get("provenanceCustomLabel") or "").strip()
+        if prov_label:
+            ctx["provenance_custom_label"] = prov_label
+        try:
+            dlv = build_deliverable(ctx)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+    fmt = (data.get("format") or "markdown").strip().lower()
+    include_footer = data.get("include_footer")
+    if include_footer is not None and not isinstance(include_footer, bool):
+        include_footer = str(include_footer).lower() in ("1", "true", "yes")
+    try:
+        payload = export_deliverable(dlv, fmt, include_footer=include_footer)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify(payload)
+
+
+# ══════════════════════════════════════════════════════
+# 报告填充（高级 / 实验性）
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/fill-report", methods=["POST"])
+def fill_report():
+    from document.pdf_export import prepare_fill_docx_for_fill
+
+    data = request.json
+    file_data = data.get("file_data", "")
+    file_name = data.get("file_name", "report.docx")
+    answers = data.get("answers", [])
+    output_path = data.get("output_path", "")
+
+    try:
+        tmp_in = None
+        if file_data:
+            tmp_in = TEMP_DIR / file_name
+            tmp_in.write_bytes(base64.b64decode(file_data))
+
+        paired_path = None
+        paired_data = data.get("paired_docx_data")
+        if paired_data:
+            paired_name = data.get("paired_docx_name") or "template.docx"
+            paired_path = TEMP_DIR / f"paired_{paired_name}"
+            paired_path.write_bytes(base64.b64decode(paired_data))
+
+        source_format = data.get("source_format") or document_format(file_name)
+        metadata = data.get("metadata") or {}
+        fill_body_text = (
+            data.get("fill_body_text")
+            or data.get("report_text")
+            or (answers[0].get("full_text") if answers else "")
+            or ""
+        )
+
+        docx_in, fill_target = prepare_fill_docx_for_fill(
+            tmp_in,
+            file_name,
+            source_format=source_format,
+            paired_docx_path=paired_path,
+            fill_body_text=fill_body_text,
+            metadata=metadata,
+        )
+        out = do_fill(docx_in, answers, output_path, metadata=metadata)
+        return jsonify(
+            {
+                "output_path": str(out),
+                "success": True,
+                "fill_target": fill_target,
+            }
+        )
+    except Exception as e:
+        loge("fill", traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════
+# 连接测试
+# ══════════════════════════════════════════════════════
+
+
+@app.route("/api/test-connection", methods=["POST"])
+def test_connection():
+    data = request.json
+    api_key = data.get("apiKey", "")
+    provider = data.get("provider", "deepseek")
+    model = data.get("model", "deepseek-chat")
+    custom_url = data.get("customUrl", "")
+    if not api_key:
+        return jsonify({"error": "API Key为空"}), 400
+    try:
+        r = call_ai(
+            api_key,
+            provider,
+            model,
+            {"type": "theory", "content": '回复"OK"两个字', "full_text": "回复OK"},
+            custom_url,
+        )
+        return jsonify(
+            {"success": True, "model": model, "response": r.get("answer", "")[:50]}
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ══════════════════════════════════════════════════════
+# 工具箱模式 — 独立工具 API（Phase 1）
+# ══════════════════════════════════════════════════════
+
+
+def _tool_ok(data=None, **kwargs):
+    """Unified toolbox response: {ok, data, ...extra}."""
+    resp = {"ok": True, "data": data}
+    resp.update(kwargs)
+    return jsonify(resp)
+
+
+def _tool_err(message: str, status=400):
+    return jsonify({"ok": False, "error": str(message)}), status
+
+
+def _tool_settings(data: dict) -> dict:
+    """Extract LLM settings from a toolbox request body."""
+    return {
+        "api_key": data.get("api_key", ""),
+        "provider": data.get("provider", "deepseek"),
+        "model": data.get("model", "deepseek-chat"),
+        "custom_url": data.get("custom_url", "") or data.get("customUrl", ""),
+    }
+
+
+# ── 1. 解析文档 ──
+
+@app.route("/api/tool/parse", methods=["POST"])
+def tool_parse():
+    data = request.json or {}
+    file_data = data.get("file_data", "")
+    file_name = data.get("file_name", "report.docx")
+    if not file_data:
+        return _tool_err("缺少 file_data（base64）")
+    try:
+        file_bytes = base64.b64decode(file_data)
+    except Exception:
+        return _tool_err("file_data base64 解码失败")
+    try:
+        tmp = TEMP_DIR / file_name
+        tmp.write_bytes(file_bytes)
+        question, metadata, full_text, warnings = build_question_from_document(tmp, file_name)
+        src_fmt = metadata.get("source_format") or document_format(file_name)
+
+        # Gather tables info
+        tables = metadata.get("tables") or question.get("tables") or []
+
+        # Gather image assets
+        image_assets = question.get("image_assets") or metadata.get("image_assets") or []
+
+        # Detect sections
+        sections_detected = []
+        section_map = {}
+        if src_fmt == "docx":
+            try:
+                sd = detect_docx_sections(tmp)
+                sections_detected = sd.get("sections_detected") or []
+                section_map = sd.get("section_map") or {}
+            except Exception:
+                pass
+
+        return _tool_ok(
+            {
+                "full_text": full_text,
+                "sections": sections_detected,
+                "section_map": section_map,
+                "tables": tables,
+                "images": image_assets,
+                "metadata": metadata,
+                "question": question,
+                "warnings": warnings,
+                "source_format": src_fmt,
+                "char_count": len(full_text),
+            }
+        )
+    except Exception as e:
+        loge("tool/parse", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 2. AI 解题 ──
+
+@app.route("/api/tool/solve", methods=["POST"])
+def tool_solve():
+    data = request.json or {}
+    text = (data.get("text") or data.get("full_text") or "").strip()
+    if not text:
+        return _tool_err("缺少 text 或 full_text")
+    settings = _tool_settings(data)
+    if not settings["api_key"]:
+        return _tool_err("未填写 API Key")
+    try:
+        question = {
+            "type": "lab_report",
+            "full_text": text,
+            "content": text,
+            "preferred_lang": data.get("language") or data.get("code_language") or "",
+        }
+        include_uml = bool(data.get("include_uml"))
+        from modules.user_constraints import normalize_user_constraints
+
+        user_constraints = normalize_user_constraints(
+            data.get("user_constraints") or data.get("userConstraints")
+        )
+        settings["user_constraints"] = user_constraints
+        result = solve_lab(
+            settings["api_key"],
+            settings["provider"],
+            settings["model"],
+            question,
+            custom_url=settings["custom_url"],
+            include_uml=include_uml,
+            format_spec=data.get("format_spec"),
+            settings=settings,
+            user_constraints=user_constraints,
+        )
+        parsed = result.get("parsed") or {}
+        payload = {
+            "answer": result.get("answer", ""),
+            "parsed": parsed,
+            "code": parsed.get("code") or result.get("code", ""),
+            "code_files": parsed.get("code_files") or result.get("code_files", []),
+            "main_file": parsed.get("main_file") or result.get("main_file", ""),
+            "language": parsed.get("language") or result.get("language", ""),
+            "diagrams": parsed.get("diagrams") or [],
+            "steps_analysis": parsed.get("steps_analysis", ""),
+            "result_description": parsed.get("result_description", ""),
+            "summary": parsed.get("summary", ""),
+            "tokens": result.get("tokens"),
+        }
+        if result.get("pipeline_meta"):
+            payload["pipeline_meta"] = result["pipeline_meta"]
+        if result.get("solve_session"):
+            payload["solve_session"] = result["solve_session"]
+        return _tool_ok(payload)
+    except Exception as e:
+        loge("tool/solve", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 3. 运行代码 ──
+
+@app.route("/api/tool/run", methods=["POST"])
+def tool_run():
+    from modules.preflight import _check_execution_pattern
+
+    data = request.json or {}
+    code = data.get("code", "")
+    language = data.get("language", "python")
+    if not code.strip():
+        return _tool_err("缺少 code")
+    try:
+        if code.strip():
+            exec_check = _check_execution_pattern(code, language)
+            if not exec_check.get("ok"):
+                return _tool_ok(
+                    {
+                        "stdout": exec_check.get("message", "代码无法安全执行"),
+                        "stderr": "",
+                        "exit_code": 0,
+                        "blocked_by_preflight": True,
+                        "preflight_pattern": exec_check.get("pattern"),
+                    }
+                )
+        output, is_error = execute_code(code, language)
+        return _tool_ok(
+            {
+                "stdout": output,
+                "stderr": output if is_error else "",
+                "exit_code": 1 if is_error else 0,
+                "is_error": is_error,
+            }
+        )
+    except Exception as e:
+        loge("tool/run", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 4. 截图 ──
+
+@app.route("/api/tool/screenshot", methods=["POST"])
+def tool_screenshot():
+    data = request.json or {}
+    code = data.get("code", "")
+    language = data.get("language", "python")
+    theme = data.get("theme") or data.get("chrome_style", "windows")
+    output_text = data.get("output_text") or data.get("output", "")
+    if not code.strip():
+        return _tool_err("缺少 code")
+    try:
+        paths = render_ide_screenshot_file(
+            code,
+            output_text,
+            language,
+            filename=data.get("filename", ""),
+            chrome_style=theme,
+        )
+        images_b64 = paths_to_b64(paths)
+        return _tool_ok(
+            {
+                "images_b64": images_b64,
+                "image_b64": images_b64[0] if images_b64 else None,
+                "page_count": len(images_b64),
+                "paths": paths,
+            }
+        )
+    except Exception as e:
+        loge("tool/screenshot", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 5. 图表渲染（PlantUML + DFD） ──
+
+def _parse_tool_diagrams(data: dict) -> list | None:
+    """Accept diagrams array, dfd_json, plantuml_src, or JSON string input."""
+    import json
+
+    diagrams = data.get("diagrams")
+    if isinstance(diagrams, str):
+        try:
+            diagrams = json.loads(diagrams)
+        except json.JSONDecodeError:
+            diagrams = None
+    if isinstance(diagrams, list) and diagrams:
+        return diagrams
+
+    raw_input = (data.get("input") or "").strip()
+    if raw_input.startswith("[") or raw_input.startswith("{"):
+        try:
+            parsed = json.loads(raw_input)
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("diagrams"), list):
+                    return parsed["diagrams"]
+                if parsed.get("plantuml") or parsed.get("dfd_json") or parsed.get("kind"):
+                    return [parsed]
+        except json.JSONDecodeError:
+            pass
+
+    dfd_json = data.get("dfd_json")
+    if dfd_json:
+        if isinstance(dfd_json, str):
+            try:
+                dfd_json = json.loads(dfd_json)
+            except json.JSONDecodeError:
+                return None
+        return [{
+            "kind": "dfd",
+            "title": data.get("title", "DFD"),
+            "source_engine": "graphviz",
+            "dfd_json": dfd_json,
+        }]
+
+    plantuml_src = data.get("plantuml_src") or data.get("plantuml") or raw_input
+    if (plantuml_src or "").strip():
+        return [{"title": data.get("title", "UML"), "plantuml": plantuml_src}]
+    return None
+
+
+@app.route("/api/tool/uml", methods=["POST"])
+def tool_uml():
+    if not UML_RENDER_OK:
+        return _tool_err("图表渲染模块不可用", 500)
+    data = request.json or {}
+    diagrams = _parse_tool_diagrams(data)
+    if not diagrams:
+        return _tool_err("缺少 diagrams / plantuml_src / dfd_json（可粘贴 #2 的 diagrams JSON 数组）")
+    allow_online = data.get("allow_online", True)
+    try:
+        out = render_uml_diagrams(
+            diagrams,
+            allow_online=allow_online,
+            code=data.get("code") or "",
+            language=data.get("language") or "java",
+        )
+        payload = {
+            "images_b64": out.get("images_b64", []),
+            "image_b64": out["images_b64"][0] if out.get("images_b64") else None,
+            "titles": out.get("titles", []),
+            "errors": out.get("errors", []),
+            "sources": out.get("sources", []),
+            "consistency": out.get("consistency"),
+            "kind_stats": out.get("kind_stats", {}),
+            "summary": out.get("summary", ""),
+            "diagram_count": len(diagrams),
+            "validation": out.get("validation"),
+            "suggested_actions": out.get("suggested_actions") or [],
+            "success": bool(out.get("success")),
+        }
+        return _tool_ok(payload)
+    except Exception as e:
+        loge("tool/uml", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 5b. 图表验错 / 修复 ──
+
+@app.route("/api/tool/verify-diagrams", methods=["POST"])
+def tool_verify_diagrams():
+    from modules.diagram_verify import verify_diagrams
+
+    data = request.json or {}
+    answer = data.get("answer_json") or data.get("parsed") or {}
+    if isinstance(answer, list):
+        answer = answer[0] if answer else {}
+    parsed = answer.get("parsed") if isinstance(answer.get("parsed"), dict) else answer
+    diagrams = _parse_tool_diagrams(data) or (parsed or {}).get("diagrams")
+    if not diagrams:
+        return _tool_err("缺少 diagrams 或 answer_json")
+    if isinstance(diagrams, list):
+        parsed = dict(parsed or {})
+        parsed["diagrams"] = diagrams
+    solve_data = {
+        "parsed": parsed,
+        "code": data.get("code") or parsed.get("code") or answer.get("code") or "",
+        "language": data.get("language") or parsed.get("language") or "java",
+    }
+    render_result = data.get("render_result")
+    try:
+        report = verify_diagrams(
+            solve_data,
+            render_result=render_result,
+            include_consistency=bool(solve_data.get("code")),
+        )
+        return _tool_ok(report)
+    except Exception as e:
+        loge("tool/verify-diagrams", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+@app.route("/api/tool/fix-diagrams", methods=["POST"])
+def tool_fix_diagrams():
+    from modules.fix_diagrams import fix_diagrams
+
+    data = request.json or {}
+    answer = data.get("answer_json") or data.get("parsed") or {}
+    if isinstance(answer, list):
+        answer = answer[0] if answer else {}
+    parsed = answer.get("parsed") if isinstance(answer.get("parsed"), dict) else answer
+    if not parsed:
+        return _tool_err("缺少 answer_json / parsed")
+    settings = _tool_settings(data)
+    if not settings["api_key"]:
+        return _tool_err("未填写 API Key")
+    issues = data.get("issues")
+    if issues is None and data.get("render_result"):
+        from modules.diagram_verify import verify_diagrams
+
+        vr = verify_diagrams(
+            {"parsed": parsed, "code": parsed.get("code") or answer.get("code") or ""},
+            render_result=data.get("render_result"),
+        )
+        issues = vr.get("issues")
+    try:
+        result = fix_diagrams(
+            settings,
+            parsed=parsed,
+            report_excerpt=data.get("report_excerpt") or data.get("text") or "",
+            feedback=data.get("feedback") or "",
+            issues=issues,
+        )
+        merged = dict(answer)
+        merged["parsed"] = result.get("parsed") or parsed
+        if merged["parsed"].get("diagrams"):
+            merged["diagrams"] = merged["parsed"]["diagrams"]
+        return _tool_ok(
+            {
+                "parsed": merged["parsed"],
+                "answer_json": merged,
+                "changed_fields": result.get("changed_fields") or ["diagrams"],
+                "diagrams": merged["parsed"].get("diagrams"),
+            }
+        )
+    except Exception as e:
+        loge("tool/fix-diagrams", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 6. 填写报告 ──
+
+@app.route("/api/tool/fill", methods=["POST"])
+def tool_fill():
+    from document.pdf_export import prepare_fill_docx_for_fill
+
+    data = request.json or {}
+    answer_json = data.get("answer_json") or data.get("answers") or []
+    file_data = data.get("file_data", "")
+    file_name = data.get("file_name", "report.docx")
+    if not answer_json:
+        return _tool_err("缺少 answer_json")
+    if isinstance(answer_json, dict):
+        answer_json = [answer_json]
+    try:
+        tmp_in = None
+        if file_data:
+            tmp_in = TEMP_DIR / file_name
+            tmp_in.write_bytes(base64.b64decode(file_data))
+
+        source_format = data.get("source_format") or document_format(file_name)
+        fill_body_text = (
+            data.get("fill_body_text")
+            or data.get("report_text")
+            or (answer_json[0].get("full_text") if answer_json else "")
+            or ""
+        )
+        fill_scope = data.get("fill_scope") or data.get("fill_sections")
+
+        docx_in, fill_target = prepare_fill_docx_for_fill(
+            tmp_in,
+            file_name,
+            source_format=source_format,
+            fill_body_text=fill_body_text,
+            metadata=data.get("metadata") or {},
+        )
+        output_path = data.get("output_path", "")
+        out_path = do_fill(
+            docx_in, answer_json, output_path,
+            metadata=data.get("metadata") or {},
+            fill_sections=fill_scope,
+        )
+
+        # Read back the result
+        out_bytes = Path(out_path).read_bytes()
+        result_b64 = base64.b64encode(out_bytes).decode()
+
+        return _tool_ok(
+            {
+                "output_path": str(out_path),
+                "file_data": result_b64,
+                "file_name": Path(out_path).name,
+                "fill_target": fill_target,
+            }
+        )
+    except Exception as e:
+        loge("tool/fill", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 7. 修复代码 ──
+
+@app.route("/api/tool/fix", methods=["POST"])
+def tool_fix():
+    data = request.json or {}
+    code = data.get("code", "")
+    error_output = data.get("error_output") or data.get("error", "")
+    language = data.get("language", "python")
+    if not code.strip():
+        return _tool_err("缺少 code")
+    settings = _tool_settings(data)
+    if not settings["api_key"]:
+        return _tool_err("未填写 API Key")
+    try:
+        result = fix_code_from_error(
+            settings,
+            code=code,
+            language=language,
+            error_output=error_output,
+            report_excerpt=data.get("report_excerpt", ""),
+            category=data.get("category", ""),
+            pattern=data.get("pattern", ""),
+        )
+        return _tool_ok(
+            {
+                "code": result.get("code", code),
+                "code_files": result.get("code_files", []),
+                "main_file": result.get("main_file", ""),
+                "language": result.get("language", language),
+                "parsed": result.get("parsed", {}),
+                "category": result.get("category", ""),
+            }
+        )
+    except Exception as e:
+        loge("tool/fix", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 8. 校验答案 ──
+
+@app.route("/api/tool/verify", methods=["POST"])
+def tool_verify():
+    data = request.json or {}
+    answer_json = data.get("answer_json") or data.get("parsed") or {}
+    if not answer_json:
+        return _tool_err("缺少 answer_json")
+    try:
+        ctx = {
+            "module_results": {"solve_lab": {"data": dict(answer_json)}},
+            "confirmed_steps": data.get("steps") or [],
+        }
+        report = verify_answer(
+            ctx,
+            answer_template_text=data.get("answer_template_text", ""),
+        )
+        return _tool_ok(
+            {
+                "passed": report.get("passed", False),
+                "checks": report.get("checks", []),
+                "suggested_actions": report.get("suggested_actions", []),
+            }
+        )
+    except Exception as e:
+        loge("tool/verify", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+# ── 9. 修订答案 ──
+
+@app.route("/api/tool/revise", methods=["POST"])
+def tool_revise():
+    data = request.json or {}
+    answer_json = data.get("answer_json") or data.get("parsed") or {}
+    feedback = (data.get("feedback") or "").strip()
+    if not answer_json:
+        return _tool_err("缺少 answer_json")
+    if not feedback:
+        return _tool_err("请填写修订反馈")
+    settings = _tool_settings(data)
+    if not settings["api_key"]:
+        return _tool_err("未填写 API Key")
+    try:
+        result = revise_answer(
+            settings,
+            parsed=dict(answer_json),
+            report_excerpt=data.get("report_excerpt", ""),
+            scope=data.get("scope") or ["full"],
+            feedback=feedback,
+            verification_report=data.get("verification_report"),
+            format_spec=data.get("format_spec"),
+        )
+        merged = result.get("parsed") or answer_json
+        return _tool_ok(
+            {
+                "parsed": merged,
+                "changed_fields": result.get("changed_fields", []),
+                "code": merged.get("code", ""),
+                "language": merged.get("language", ""),
+            }
+        )
+    except Exception as e:
+        loge("tool/revise", traceback.format_exc())
+        return _tool_err(str(e), 500)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=5199)
+    args = parser.parse_args()
+    logi("server", f"启动端口={args.port}")
+    app.run(host="127.0.0.1", port=args.port, debug=False, threaded=True)

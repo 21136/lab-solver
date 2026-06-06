@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Build / distribution
+dist/
+release/
+installer/
+python-dist/
+lab-solver-out/
+
+# Large optional assets (fetch via scripts/fetch-graphviz-portable.ps1)
+src/python/assets/graphviz/
+
+# IDE / OS
+.vscode/
+Thumbs.db
+.DS_Store
+
+# Logs & secrets
+*.log
+.env
+.env.*
+
+# User uploads & scratch (local test only)
+upload/
+upload_*/
+uploads_*/
+uploaded/
+uploaded_*
+Users*/
+Users21136AppDataLocalTemp_agnes_tmp/
+
+# Backup / local scratch files
+*.bak
+sort_performance.png
+source.txt
+test_upload.txt
+students.json
+src/python/t.png
+src/python/test_full.png
+src/python/test_uml.png

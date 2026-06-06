@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>解题能手</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- Monaco Editor -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.46.0/min/vs/loader.min.js"></script>
+</head>
+<body>
+  <!-- 自定义标题栏 -->
+  <div class="titlebar">
+    <div class="titlebar-left">
+      <div class="app-icon">🧠</div>
+      <span class="app-title">解题能手</span>
+      <span class="app-version">v1.0</span>
+    </div>
+    <div class="titlebar-drag"></div>
+    <div class="titlebar-controls">
+      <button class="ctrl-btn minimize" onclick="window.electronAPI.minimize()">─</button>
+      <button class="ctrl-btn maximize" onclick="window.electronAPI.maximize()">□</button>
+      <button class="ctrl-btn close" onclick="window.electronAPI.close()">✕</button>
+    </div>
+  </div>
+
+  <!-- 主布局 -->
+  <div class="app-layout">
+    <!-- 左侧导航 -->
+    <nav class="sidebar">
+      <div class="nav-items">
+        <button class="nav-item active" data-tab="home" onclick="switchTab('home')">
+          <span class="nav-icon">🏠</span>
+          <span class="nav-label">主页</span>
+        </button>
+        <button class="nav-item" data-tab="history" onclick="switchTab('history')">
+          <span class="nav-icon">📋</span>
+          <span class="nav-label">历史</span>
+        </button>
+        <button class="nav-item" data-tab="settings" onclick="switchTab('settings')">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">设置</span>
+        </button>
+      </div>
+      <div class="sidebar-status">
+        <div class="status-dot" id="serverStatus"></div>
+        <span id="serverStatusText">连接中...</span>
+      </div>
+    </nav>
+
+    <!-- 主内容区 -->
+    <main class="content">
+      <!-- 主页标签 -->
+      <div class="tab-panel active" id="tab-home">
+        <!-- 步骤指示器 -->
+        <div class="steps-bar">
+          <div class="step active" data-step="1">
+            <div class="step-circle">1</div>
+            <span>上传报告</span>
+          </div>
+          <div class="step-line"></div>
+          <div class="step" data-step="2">
+            <div class="step-circle">2</div>
+            <span>计划确认</span>
+          </div>
+          <div class="step-line"></div>
+          <div class="step" data-step="3">
+            <div class="step-circle">3</div>
+            <span>答案工作区</span>
+          </div>
+          <div class="step-line"></div>
+          <div class="step" data-step="4">
+            <div class="step-circle">4</div>
+            <span>复制导出</span>
+          </div>
+        </div>
+
+        <!-- 步骤1：上传 -->
+        <div class="step-content active" id="step-1">
+          <div class="step1-layout">
+            <div class="upload-area" id="uploadArea"
+                 ondragover="handleDragOver(event)"
+                 ondrop="handleDrop(event)"
+                 ondragleave="handleDragLeave(event)"
+                 onclick="triggerAddDocuments()">
+              <div class="upload-icon" id="uploadIcon">📄</div>
+              <h2 id="uploadTitle">拖拽或点击添加文档</h2>
+              <p class="upload-subhint" id="uploadAreaHint">支持 .doc / .docx / .pdf，可多次添加组成文档清单</p>
+              <div class="upload-role-hints">
+                <span class="role-hint-chip assignment">题目 / 要求</span>
+                <span class="role-hint-chip fill_target">待填报告</span>
+                <span class="role-hint-chip answer_template">范文 / 模版</span>
+                <span class="role-hint-chip reference">参考资料</span>
+              </div>
+              <button class="btn-primary" id="addDocsBtn" onclick="event.stopPropagation(); triggerAddDocuments()">
+                添加文档
+              </button>
+              <button class="btn-secondary" id="pasteAssignmentBtn" onclick="event.stopPropagation(); openPasteAssignmentModal()">
+                粘贴题目 / 要求
+              </button>
+            </div>
+
+            <div class="document-list-panel" id="documentListPanel">
+              <div class="panel-header">
+                <h3>📁 文档清单</h3>
+                <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); openPasteAssignmentModal()">粘贴题目</button>
+                <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); triggerAddDocuments()">+ 添加</button>
+              </div>
+              <div class="document-list" id="documentList">
+                <div class="empty-state doc-list-empty" id="documentListEmpty">
+                  <span>📭</span>
+                  <p>尚未添加文档</p>
+                </div>
+              </div>
+              <div class="document-list-actions">
+                <button type="button" class="btn-primary" id="parseDocumentsBtn" disabled onclick="parseAllDocuments()">
+                  解析并继续
+                </button>
+              </div>
+            </div>
+
+            <div class="split-preview-panel" id="splitPreviewPanel" style="display:none">
+              <div class="panel-header">
+                <h3>✂️ 合体文档拆分预览</h3>
+                <span class="form-hint">自动识别实验步骤标题为拆分点，可手选调整</span>
+              </div>
+              <div class="split-controls">
+                <label class="config-label">拆分标题</label>
+                <select class="lang-select-big" id="splitHeadingSelect" onchange="onSplitHeadingChange()"></select>
+                <button type="button" class="btn-secondary btn-sm" onclick="reparseWithSplitHeading()">应用拆分</button>
+              </div>
+              <div class="split-preview-columns">
+                <div class="split-preview-col">
+                  <div class="split-preview-label">题目段（拆分点之前）</div>
+                  <div class="split-preview-body" id="splitPreviewAssignment"></div>
+                </div>
+                <div class="split-preview-col">
+                  <div class="split-preview-label">填表段（拆分点起）</div>
+                  <div class="split-preview-body" id="splitPreviewFill"></div>
+                </div>
+              </div>
+              <button type="button" class="btn-primary" id="splitConfirmBtn" style="display:none" onclick="confirmSplitAndContinue()">
+                确认拆分并进入计划
+              </button>
+            </div>
+
+            <div class="template-upload-panel" id="templateUploadPanel">
+              <div class="panel-header">
+                <h3>📝 答题模版 / 范文（可选）</h3>
+                <span class="form-hint template-disclaimer">仅供参考，以当前报告为准；不与作业章节硬性绑定</span>
+              </div>
+              <div class="template-upload-actions">
+                <button type="button" class="btn-secondary btn-sm" onclick="triggerAnswerTemplateUpload()">上传 .docx 范文</button>
+                <button type="button" class="btn-ghost btn-sm" id="clearTemplateBtn" style="display:none" onclick="clearAnswerTemplate()">清除</button>
+              </div>
+              <div class="template-summary-card" id="templateSummaryCard" style="display:none">
+                <div class="template-summary-text" id="templateSummaryText"></div>
+                <div class="template-section-tags" id="templateSectionTags"></div>
+                <button type="button" class="btn-primary btn-sm" id="confirmTemplateBtn" onclick="confirmAnswerTemplate()">确认采用格式建议</button>
+              </div>
+              <div class="template-confirmed-bar" id="templateConfirmedBar" style="display:none">
+                <span class="section-tag template" id="templateConfirmedLabel">已确认格式建议</span>
+              </div>
+            </div>
+          </div>
+          <div class="demo-hint">
+            <span class="hint-icon">💡</span>
+            <span>没有报告？<a href="#" onclick="loadDemo()">加载演示文档</a>试试</span>
+          </div>
+        </div>
+
+        <!-- 步骤2：解析结果 -->
+        <div class="step-content" id="step-2">
+          <!-- 模式切换 -->
+          <div class="mode-switch-bar" id="modeSwitchBar" style="display:none">
+            <button class="mode-switch-tab active" data-mode="guided" onclick="switchToGuidedMode()">引导模式</button>
+            <button class="mode-switch-tab" data-mode="toolbox" onclick="switchToToolboxMode()">工具箱模式</button>
+          </div>
+
+          <!-- 引导模式（现有 UI） -->
+          <div class="parse-result" id="guidedModeContent">
+            <div class="section-header">
+              <h3>📋 检测到的报告内容</h3>
+              <button class="btn-secondary" onclick="goToStep(1)">← 重新上传</button>
+            </div>
+
+            <!-- 检测信息卡片 -->
+            <div class="detect-info-card" id="detectInfoCard" style="display:none">
+              <div class="detect-row">
+                <span class="detect-label">课程</span>
+                <span class="detect-value" id="detectCourse">—</span>
+              </div>
+              <div class="detect-row">
+                <span class="detect-label">实验</span>
+                <span class="detect-value" id="detectTitle">—</span>
+              </div>
+              <div class="detect-row">
+                <span class="detect-label">专业</span>
+                <span class="detect-value" id="detectMajor">—</span>
+              </div>
+              <div class="detect-row" id="pdfExportHint" style="display:none">
+                <span class="detect-label">导出格式</span>
+                <span class="detect-value">.docx（PDF 无法直接填回，完成后将生成 Word）</span>
+              </div>
+              <div class="pdf-pair-bar" id="pdfPairDocxBar" style="display:none">
+                <span class="pdf-pair-label" id="pdfPairDocxLabel">可选：添加空白 Word 模版，填表写入该 docx</span>
+                <button type="button" class="btn-secondary btn-sm" onclick="triggerPairedDocxUpload()">
+                  选择 Word 模版
+                </button>
+                <button type="button" class="btn-ghost btn-sm" id="clearPairedDocxBtn" style="display:none" onclick="clearPairedDocx()">
+                  清除
+                </button>
+              </div>
+            </div>
+
+            <div class="questions-list" id="questionsList"></div>
+
+            <!-- 分节工作台（Phase 3 UI） -->
+            <div class="sections-workbench" id="sectionsWorkbench">
+              <div class="sections-workbench-header">
+                <h4>📑 分节设置</h4>
+                <span class="form-hint">每节选择填写方式；可混写正文与老师要求，点「智能解析」拆分</span>
+              </div>
+              <div class="sections-global-bar solve-config-bar">
+                <div class="solve-config-item">
+                  <label class="config-label">编程语言</label>
+                  <select class="lang-select-big" id="solveLang">
+                    <option value="c">C语言</option>
+                    <option value="cpp">C++</option>
+                    <option value="java">Java</option>
+                    <option value="python" selected>Python</option>
+                    <option value="javascript">JavaScript</option>
+                  </select>
+                </div>
+                <div class="solve-config-item">
+                  <label class="config-label">截图窗口</label>
+                  <select class="lang-select-big" id="screenshotChromeStep2" onchange="syncScreenshotChrome(this.value)">
+                    <option value="windows" selected>Windows</option>
+                    <option value="mac">macOS</option>
+                  </select>
+                </div>
+                <div class="solve-config-item">
+                  <button type="button" class="btn-secondary" style="padding:6px 10px;font-size:12px" onclick="collectTerminalEnv()" title="从 Cursor/VS Code 读取">🔍 采集终端</button>
+                </div>
+                <div class="solve-config-item">
+                  <label class="config-label">终端</label>
+                  <select class="lang-select-big" id="terminalProfileStep2" onchange="onTerminalSettingsChange()">
+                    <option value="win_powershell">PowerShell</option>
+                    <option value="win_cmd">CMD</option>
+                    <option value="win_gitbash">Git Bash</option>
+                    <option value="mac_zsh">mac zsh</option>
+                    <option value="custom">自定义</option>
+                  </select>
+                </div>
+                <div class="solve-config-item">
+                  <label class="config-label">
+                    <input type="checkbox" id="includeCodeCheck" checked>
+                    &nbsp;将源码写入报告
+                  </label>
+                </div>
+                <div class="solve-config-item">
+                  <label class="config-label" title="类图、时序图等（PlantUML 渲染）">
+                    <input type="checkbox" id="includeUmlCheck">
+                    &nbsp;生成 UML 图
+                  </label>
+                </div>
+              </div>
+              <div class="sections-global-bar solve-config-bar" id="userConstraintsBar">
+                <div class="solve-config-item user-constraints-panel">
+                  <label class="config-label">生成约束</label>
+                  <p class="form-hint">影响 AI 生成策略；默认开启内化验证（在沙箱试跑代码）</p>
+                  <div class="checkbox-row">
+                    <label class="config-label" title="不在本机 subprocess 试跑，仅生成代码与报告">
+                      <input type="checkbox" id="constraintSkipValidation" onchange="onUserConstraintsChange()">
+                      &nbsp;不用帮我跑，只要代码
+                    </label>
+                    <label class="config-label" title="禁止非 JDK 第三方 jar / import">
+                      <input type="checkbox" id="constraintNoExternalJar" onchange="onUserConstraintsChange()">
+                      &nbsp;不要任何第三方 jar
+                    </label>
+                    <label class="config-label" title="导出 docx/Markdown 时附加诚信页脚">
+                      <input type="checkbox" id="constraintProvenanceLabel" onchange="onUserConstraintsChange()">
+                      &nbsp;导出加诚信标注
+                    </label>
+                  </div>
+                  <input type="text" class="form-input provenance-label-input" id="provenanceCustomLabel"
+                    placeholder="诚信文案（可选），如：内容由 AI 辅助生成，本人已核对"
+                    onchange="onProvenanceLabelChange()" oninput="onProvenanceLabelChange()">
+                </div>
+              </div>
+              <div class="sections-global-bar solve-config-bar" id="outputModeBar">
+                <div class="solve-config-item">
+                  <label class="config-label">输出方式</label>
+                  <p class="form-hint output-mode-hint">默认生成答案内容，由你自行粘贴到学校模版或学习通</p>
+                  <div class="radio-row">
+                    <label class="radio-label">
+                      <input type="radio" name="outputMode" value="deliverable" checked onchange="onOutputModeChange()">
+                      答案工作区（推荐）
+                    </label>
+                  </div>
+                  <details class="output-mode-advanced">
+                    <summary>高级：尝试自动填入 Word（实验性）</summary>
+                    <div class="radio-row output-mode-advanced-options">
+                      <label class="radio-label">
+                        <input type="radio" name="outputMode" value="fill_original" onchange="onOutputModeChange()">
+                        填回原文档
+                      </label>
+                      <label class="radio-label">
+                        <input type="radio" name="outputMode" value="new_document" onchange="onOutputModeChange()">
+                        生成新文档
+                      </label>
+                      <label class="radio-label">
+                        <input type="radio" name="outputMode" value="answer_only" onchange="onOutputModeChange()">
+                        仅界面展示（同工作区）
+                      </label>
+                    </div>
+                    <p class="form-hint">不保证版式匹配；建议以复制粘贴为主</p>
+                  </details>
+                </div>
+              </div>
+              <div class="sections-global-rules">
+                <label class="config-label">老师总体要求（跨多节，可选）</label>
+                <textarea class="form-input sections-input" id="sectionsGlobalRules" rows="2" placeholder="如：全报告末尾须加诚信声明…"></textarea>
+                <button type="button" class="btn-secondary btn-sm sections-global-parse-btn" onclick="parseGlobalRulesBrief()">智能解析总体要求</button>
+              </div>
+              <div class="sections-rows" id="sectionsRowsList"></div>
+            </div>
+
+            <div class="agent-stale-banner" id="agentStaleBanner" style="display:none">
+              分节设置或文档已变更，请重新生成计划后再执行。
+            </div>
+
+            <div class="sections-action-bar solve-config-bar">
+              <div class="solve-action-group" style="margin-left:0;width:100%;justify-content:flex-end">
+                <button class="btn-secondary" id="generatePlanBtn" onclick="generateAgentPlan()">
+                  📋 生成计划
+                </button>
+                <button class="btn-primary" id="executePlanBtn" onclick="executeAgentPlan()" disabled>
+                  ▶ 执行计划
+                </button>
+              </div>
+            </div>
+
+            <!-- Agent 计划预览（标准模式） -->
+            <div class="agent-plan-panel" id="agentPlanPanel" style="display:none">
+              <div class="agent-plan-header">
+                <h4>📑 执行计划</h4>
+                <span class="agent-plan-meta" id="agentPlanMeta"></span>
+              </div>
+              <div class="agent-sections-summary" id="agentSectionsSummary" style="display:none"></div>
+              <div class="plan-steps-list" id="planStepsList"></div>
+              <div class="clarifications-panel" id="clarificationsPanel" style="display:none"></div>
+            </div>
+          </div>
+
+          <!-- 工具箱模式 -->
+          <div class="toolbox-panel" id="toolboxPanel" style="display:none">
+            <div class="toolbox-header">
+              <h3>🧰 工具箱 — 生成答案，自行填写</h3>
+              <span class="form-hint">主路径：解析 → 解题 → 在答案工作区复制；填表为高级实验功能</span>
+              <div class="toolbox-diagram-status" id="toolboxDiagramStatus" style="display:none"></div>
+              <button type="button" class="btn-primary btn-sm toolbox-chain-btn" id="toolboxChainBtn"
+                onclick="runToolChain()" disabled>⚡ 一键链 (#1→#2 解题)</button>
+              <button type="button" class="btn-ghost btn-sm" id="toolboxResetBtn"
+                onclick="confirmResetToolbox()" title="重置所有工具状态">🔄 重置</button>
+            </div>
+            <div class="toolbox-tools" id="toolboxTools"></div>
+            <div class="toolbox-output-bar" id="toolboxOutputBar" style="display:none">
+              <button type="button" class="btn-primary btn-sm" id="toolboxDownloadBtn" onclick="toolboxDownloadOutput()">📥 下载填写后的报告</button>
+              <button type="button" class="btn-secondary btn-sm" onclick="toolboxCopyLastJson()">📋 复制最后输出的 JSON</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 步骤3：解题进行中 -->
+        <div class="step-content" id="step-3">
+          <div class="solving-panel">
+            <div class="section-header">
+              <h3 id="step3Title">📋 答案工作区</h3>
+              <div class="step3-header-actions">
+                <button class="btn-ghost" id="cancelAgentRunBtn" style="display:none" onclick="cancelAgentRun()">取消执行</button>
+                <button class="btn-ghost" onclick="goToStep(2)">← 返回</button>
+              </div>
+            </div>
+            <div class="step3-layout" id="step3Layout">
+              <div class="step3-main">
+                <div class="agent-progress-wrap" id="agentProgressWrap" style="display:none">
+                  <div class="agent-progress-label">
+                    <span id="agentProgressLabel">准备执行…</span>
+                    <span id="agentProgressPct">0%</span>
+                  </div>
+                  <div class="agent-progress-track">
+                    <div class="agent-progress-fill" id="agentProgressFill" style="width:0%"></div>
+                  </div>
+                </div>
+                <div class="solving-list" id="solvingList"></div>
+
+                <div class="deliverable-workspace" id="deliverableWorkspace" style="display:none">
+                  <div class="deliverable-header">
+                    <div class="deliverable-header-left">
+                      <span class="deliverable-validation-badge skipped" id="deliverableValidationBadge" title="代码验证状态">未验证</span>
+                      <span class="form-hint" id="deliverableValidationNote">请自行在实验环境运行代码</span>
+                    </div>
+                    <div class="deliverable-provenance" id="deliverableProvenance" style="display:none">
+                      <span class="deliverable-provenance-label" id="deliverableProvenanceLabel"></span>
+                      <span class="deliverable-integrity" title="内容摘要校验码（sections+code）">
+                        校验码 <code id="deliverableIntegrityHash">—</code>
+                        <button type="button" class="btn-ghost btn-xs" onclick="copyDeliverableIntegrityHash()" title="复制校验码">复制</button>
+                      </span>
+                    </div>
+                    <div class="deliverable-actions">
+                      <button type="button" class="btn-secondary btn-sm" onclick="copyDeliverableJson()">📋 JSON</button>
+                      <button type="button" class="btn-secondary btn-sm" onclick="copyDeliverableMarkdown()">📋 Markdown</button>
+                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableMarkdown()">⬇ Markdown</button>
+                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableDocx()">⬇ docx</button>
+                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableCodeZip()">⬇ 代码 zip</button>
+                      <button type="button" class="btn-secondary btn-sm" onclick="downloadDeliverableDiagramsZip()">⬇ 图表 zip</button>
+                    </div>
+                  </div>
+                  <div class="deliverable-tabs" id="deliverableTabs"></div>
+                  <div class="deliverable-section-body" id="deliverableSectionBody"></div>
+                  <div class="deliverable-diagrams" id="deliverableDiagrams" style="display:none"></div>
+                </div>
+
+                <div class="agent-verify-wrap" id="agentVerifyWrap" style="display:none">
+                  <div class="agent-verify-header">
+                    <h4>校验清单</h4>
+                    <button type="button" class="btn-ghost btn-sm" onclick="runAgentVerify()">重新校验</button>
+                  </div>
+                  <ul class="agent-verify-list" id="agentVerifyList"></ul>
+                  <p class="form-hint" id="agentVerifyActions"></p>
+                  <div class="agent-verify-fixes" id="agentVerifyFixes"></div>
+                  <details class="agent-revise-panel" id="agentRevisePanel">
+                    <summary>不满意？展开修订选项</summary>
+                    <div class="agent-revise-body">
+                      <div class="agent-revise-tags" id="agentReviseTags"></div>
+                      <fieldset class="agent-revise-scopes" id="agentReviseScopes">
+                        <legend class="config-label">有问题部分（可多选）</legend>
+                      </fieldset>
+                      <textarea class="form-input" id="agentReviseFeedback" rows="2" placeholder="简述问题；可点上方快捷标签；也可回 Step2 改分节要求"></textarea>
+                      <div class="agent-revise-actions">
+                        <button type="button" class="btn-primary" onclick="requestAgentRevise()">按选中范围修订</button>
+                        <button type="button" class="btn-secondary" onclick="requestAgentReviseFull()">全部重来</button>
+                        <button type="button" class="btn-secondary" onclick="requestAgentFixCode()">只修代码并重跑</button>
+                        <button type="button" class="btn-secondary" onclick="refillReportOnly()">仅重新填充</button>
+                        <button type="button" class="btn-secondary" onclick="openManualEdit()">我自己改</button>
+                        <button type="button" class="btn-ghost" onclick="goToStep(2)">← 回分节设置</button>
+                      </div>
+                      <div class="agent-version-row" id="agentVersionRow" style="display:none">
+                        <select class="form-select" id="agentVersionSelect"></select>
+                        <button type="button" class="btn-ghost btn-sm" onclick="restoreAgentVersion()">恢复所选版本</button>
+                      </div>
+                    </div>
+                  </details>
+                </div>
+
+                <!-- 代码编辑器面板 -->
+            <div class="code-panel" id="codePanel" style="display:none">
+              <div class="code-panel-header">
+                <span id="codePanelTitle">代码编辑器</span>
+                <div class="code-actions">
+                  <select id="langSelect" class="lang-select" onchange="changeLanguage()">
+                    <option value="python">Python</option>
+                    <option value="javascript">JavaScript</option>
+                    <option value="c">C语言</option>
+                    <option value="cpp">C++</option>
+                    <option value="java">Java</option>
+                  </select>
+                  <select id="screenshotChrome" class="lang-select" title="截图窗口样式" onchange="syncScreenshotChrome(this.value)">
+                    <option value="windows" selected>Win截图</option>
+                    <option value="mac">Mac截图</option>
+                  </select>
+                  <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary);cursor:pointer">
+                    <input type="checkbox" id="guiModeCheck"> GUI程序
+                  </label>
+                  <button class="btn-run" onclick="runCode(false)">▶ 运行</button>
+                  <button class="btn-run" style="background:var(--purple)" onclick="runCode(true)">📸 运行+截图</button>
+                  <button class="btn-ghost" onclick="closeCodePanel()">✕</button>
+                </div>
+              </div>
+              <div class="code-file-tabs" id="codeFileTabs" style="display:none"></div>
+              <div id="monacoEditor" style="height: 300px;"></div>
+              <div class="console-output" id="consoleOutput">
+                <div class="console-header">输出</div>
+                <div class="console-body" id="consoleBody">等待运行...</div>
+              </div>
+            </div>
+
+                <div class="action-bar" id="exportActionBar" style="display:none">
+                  <span class="export-hint" id="exportActionHint">💡 答案已生成，请从上方工作区复制分节内容；也可在代码面板试跑</span>
+                  <details class="export-advanced-fill" id="exportAdvancedFill">
+                    <summary>高级：尝试填入 Word 模版（实验性）</summary>
+                    <button type="button" class="btn-secondary btn-sm" onclick="generateReport()">
+                      📄 生成并填入报告
+                    </button>
+                  </details>
+                </div>
+              </div>
+
+              <aside class="agent-thought-sidebar" id="agentThoughtSidebar" aria-label="思考过程">
+                <div class="thought-sidebar-header">
+                  <span>思考过程</span>
+                  <div class="thought-sidebar-tools">
+                    <span class="thought-sidebar-badge" id="thoughtSidebarBadge"></span>
+                    <button type="button" class="btn-ghost btn-sm" id="thoughtExportBtn" onclick="exportThoughtLogManual()" title="导出思考过程为文本文件" style="display:none">导出</button>
+                    <button type="button" class="btn-ghost btn-sm" id="thoughtSidebarToggle" onclick="toggleThoughtSidebar()" aria-expanded="false">展开</button>
+                  </div>
+                </div>
+                <div class="agent-thought-body collapsed" id="agentThoughtBody"></div>
+              </aside>
+            </div>
+          </div>
+        </div>
+
+        <!-- 步骤4：导出 -->
+        <div class="step-content" id="step-4">
+          <div class="export-panel">
+            <div class="success-header">
+              <div class="success-icon">✅</div>
+              <h2>答案已就绪</h2>
+              <p id="exportSuccessSubtitle">请从答案工作区复制内容，自行粘贴到学校模版</p>
+            </div>
+            <div class="export-preview" id="exportPreview"></div>
+            <p id="thoughtLogSavedNote" style="display:none;font-size:12px;color:var(--text-muted);margin:8px 0 0"></p>
+            <div class="export-actions">
+              <button class="btn-primary" onclick="exportReport()">
+                💾 下载完成的报告
+              </button>
+              <button class="btn-secondary" onclick="exportThoughtLogManual()" id="exportThoughtLogBtn">
+                📝 导出思考过程
+              </button>
+              <button class="btn-secondary" onclick="openThoughtLogFile()" id="openThoughtLogBtn" style="display:none">
+                📄 打开思考过程
+              </button>
+              <button class="btn-secondary" onclick="goToStep(3)">
+                ← 返回代码面板 / 截图
+              </button>
+              <button class="btn-secondary" onclick="openReportFolder()">
+                📂 打开所在文件夹
+              </button>
+              <button class="btn-ghost" onclick="startNew()">
+                🔄 处理新报告
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 历史标签 -->
+      <div class="tab-panel" id="tab-history">
+        <div class="page-header">
+          <h2>📋 历史记录</h2>
+        </div>
+        <div class="history-list" id="historyList">
+          <div class="empty-state">
+            <span>📭</span>
+            <p>暂无历史记录</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 设置标签 -->
+      <div class="tab-panel" id="tab-settings">
+        <div class="page-header">
+          <h2>⚙️ 设置</h2>
+        </div>
+        <div class="settings-container">
+          <!-- 解题模式 -->
+          <div class="settings-card">
+            <h3>🎯 解题模式</h3>
+            <div class="form-group">
+              <label>Agent 运行模式</label>
+              <div class="run-mode-options" id="runModeOptions">
+                <label class="run-mode-option">
+                  <input type="radio" name="runMode" value="standard" checked onchange="onRunModeChange()">
+                  <span>标准模式</span>
+                  <span class="form-hint">生成计划 → 勾选步骤 → 执行</span>
+                </label>
+                <label class="run-mode-option">
+                  <input type="radio" name="runMode" value="deep" onchange="onRunModeChange()">
+                  <span>深度模式</span>
+                  <span class="form-hint">理解+预检+审稿，约 3～4 次调用</span>
+                </label>
+                <label class="run-mode-option">
+                  <input type="radio" name="runMode" value="react" onchange="onRunModeChange()">
+                  <span>ReAct 模式</span>
+                  <span class="form-hint">AI 自主决策工具调用，边看边改</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI配置 -->
+          <div class="settings-card">
+            <h3>🤖 AI 配置</h3>
+            <div class="form-group">
+              <label>AI 提供商</label>
+              <select class="form-select" id="aiProvider" onchange="onProviderChange()">
+                <option value="deepseek">DeepSeek（推荐，便宜）</option>
+                <option value="openai">OpenAI (GPT-4)</option>
+                <option value="claude">Anthropic (Claude)</option>
+                <option value="zhipu">智谱AI (GLM-4)</option>
+                <option value="custom">自定义API</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>API Key</label>
+              <div class="input-with-btn">
+                <input type="password" class="form-input" id="apiKey" placeholder="sk-..." />
+                <button class="btn-ghost" onclick="toggleApiKeyVisibility()">👁</button>
+              </div>
+              <span class="form-hint" id="apiKeyHint">DeepSeek API Key，在 platform.deepseek.com 获取</span>
+              <div class="key-storage-notice" id="keyStorageNotice" role="note">
+                <strong>Key 存于本机</strong>
+                <span>经操作系统加密（safeStorage）后保存在本机，不会上传至软件作者服务器；调用 AI 时经 HTTPS 发送至您选择的厂商。请勿在公共或共享电脑上保存 Key。</span>
+              </div>
+            </div>
+            <div class="form-group" id="customUrlGroup" style="display:none">
+              <label>自定义API地址</label>
+              <input type="text" class="form-input" id="customUrl" placeholder="https://your-api.com/v1" />
+            </div>
+            <div class="form-group">
+              <label>模型</label>
+              <select class="form-select" id="modelSelect">
+                <option value="deepseek-chat">deepseek-chat（推荐）</option>
+                <option value="deepseek-reasoner">deepseek-reasoner（推理增强）</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>截图窗口样式</label>
+              <select class="form-select" id="screenshotChromeSettings" onchange="syncScreenshotChrome(this.value)">
+                <option value="windows">Windows（默认）</option>
+                <option value="mac">macOS</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>截图布局</label>
+              <select class="form-select" id="screenshotLayoutSettings" onchange="onScreenshotLayoutChange()">
+                <option value="full" selected>完整 VS Code 窗口（推荐）</option>
+                <option value="compact">仅编辑区+终端</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="umlAllowOnlineSettings" checked onchange="onUmlSettingsChange()">
+                UML 允许在线渲染（PlantUML 官方服务，无本地 Java 时使用）
+              </label>
+            </div>
+            <div class="form-group">
+              <label>终端类型（截图里的提示符）</label>
+              <select class="form-select" id="terminalProfileSettings" onchange="onTerminalSettingsChange()">
+                <option value="win_powershell">Windows PowerShell</option>
+                <option value="win_cmd">Windows CMD</option>
+                <option value="win_gitbash">Git Bash (MINGW)</option>
+                <option value="mac_zsh">macOS zsh</option>
+                <option value="mac_bash">macOS bash</option>
+                <option value="mac_ps">macOS PowerShell</option>
+                <option value="custom">自定义提示符</option>
+              </select>
+              <span class="form-hint">选和你 VS Code 终端里一致的样式，截图更像本人电脑</span>
+            </div>
+            <div class="form-group">
+              <label>终端工作目录（可选）</label>
+              <input type="text" class="form-input" id="terminalCwdSettings" placeholder="如 C:\Users\你的用户名\Desktop\实验" oninput="onTerminalSettingsChange()" />
+            </div>
+            <div class="form-group" id="terminalCustomGroup" style="display:none">
+              <label>自定义提示符</label>
+              <input type="text" class="form-input" id="terminalCustomSettings" placeholder="如 PS D:\homework&gt; " oninput="onTerminalSettingsChange()" />
+            </div>
+            <div class="form-group">
+              <button type="button" class="btn-secondary" onclick="collectTerminalEnv()">🔍 一键采集终端环境</button>
+              <span class="form-hint" style="display:block;margin-top:8px" id="terminalCollectHint">从 Cursor/VS Code 设置与本机路径自动读取</span>
+            </div>
+            <div class="form-group">
+              <span class="form-hint" id="terminalPreviewHint">预览：PS C:\Users\Student\Desktop\lab&gt; python main.py</span>
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="showThoughtTraceSettings" onchange="onShowThoughtTraceChange()">
+                显示思考过程侧栏（标准模式也可开启）
+              </label>
+              <span class="form-hint">深度模式默认展示；勾选后标准模式执行时也显示 SSE 思考/预检/审稿</span>
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="optimizePlanFromUsageSettings">
+                根据使用习惯优化计划建议（本地）
+              </label>
+              <span class="form-hint">多次取消某步骤后，下次计划默认不勾选该步；数据仅存本机</span>
+            </div>
+            <div class="form-group">
+              <label>
+                <input type="checkbox" id="autoRemediateSettings">
+                校验未通过时自动修复一次（消耗 Token）
+              </label>
+              <span class="form-hint">verify 失败后按建议局部重跑并再校验（最多 1 轮）</span>
+            </div>
+            <div class="form-group">
+              <label>解题语言</label>
+              <select class="form-select" id="codeLanguage">
+                <option value="python">Python</option>
+                <option value="c">C语言</option>
+                <option value="cpp">C++</option>
+                <option value="java">Java</option>
+                <option value="javascript">JavaScript</option>
+              </select>
+            </div>
+            <button class="btn-primary" onclick="saveSettings()">保存设置</button>
+            <button class="btn-secondary" onclick="testConnection()">测试连接</button>
+            <div id="testResult" class="test-result"></div>
+          </div>
+
+          <!-- 合规 -->
+          <div class="settings-card" id="complianceSettingsCard">
+            <h3>📜 免责声明</h3>
+            <div class="compliance-prose" id="complianceDisclaimerText"></div>
+            <button type="button" class="btn-secondary btn-sm" onclick="showDisclaimerModal(false)">再次查看</button>
+          </div>
+
+          <div class="settings-card">
+            <h3>🔒 隐私说明</h3>
+            <div class="compliance-prose" id="compliancePrivacyText"></div>
+            <p class="form-hint">日志路径：<code id="complianceLogPath">—</code></p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+              <button type="button" class="btn-secondary btn-sm" onclick="showPrivacyModal()">查看完整说明</button>
+              <button type="button" class="btn-secondary btn-sm" onclick="openLogFolder()">打开日志目录</button>
+              <button type="button" class="btn-secondary btn-sm" onclick="showOnboardingModal()">使用引导</button>
+            </div>
+          </div>
+
+          <!-- 关于 -->
+          <div class="settings-card">
+            <h3>ℹ️ 关于</h3>
+            <p class="about-text">解题能手 v1.0 — AI驱动的实验报告助手</p>
+            <p class="about-text">标准模式：生成计划 → 勾选步骤 → 执行；深度模式：预检+审稿；ReAct 模式：AI 自主决策。</p>
+            <p class="about-text">支持编程题自动解题、代码执行、截图、报告填充。</p>
+            <p class="about-text about-warn">⚠️ 本工具仅用于学习辅助，请勿用于作弊。提交前请阅读免责声明。</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- 加载遮罩 -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="loading-card">
+      <div class="loading-spinner"></div>
+      <h3>解题能手启动中</h3>
+      <p id="loadingStatus">正在初始化AI引擎...</p>
+    </div>
+  </div>
+
+  <!-- 合规 / 引导弹窗 -->
+  <div class="compliance-modal-overlay" id="complianceModal" aria-hidden="true">
+    <div class="compliance-modal" role="dialog" aria-labelledby="complianceModalTitle">
+      <h3 id="complianceModalTitle"></h3>
+      <div class="compliance-modal-body" id="complianceModalBody"></div>
+      <label class="compliance-modal-check" id="complianceModalCheckWrap" style="display:none">
+        <input type="checkbox" id="complianceModalCheck">
+        <span>我已阅读并理解</span>
+      </label>
+      <div class="compliance-modal-actions">
+        <button type="button" class="btn-secondary" id="complianceModalSecondary">取消</button>
+        <button type="button" class="btn-primary" id="complianceModalPrimary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 粘贴题目模态框 -->
+  <div class="revise-feedback-overlay paste-assignment-overlay" id="pasteAssignmentModal" style="display:none">
+    <div class="revise-feedback-dialog paste-assignment-dialog">
+      <h3>📋 粘贴题目 / 要求</h3>
+      <p class="form-hint">从超星、慕课等平台复制作业说明，粘贴到下方。角色默认为「题目 / 要求」，可与空白实验报告模板一起解析。</p>
+      <label class="config-label" for="pasteAssignmentRole">文档角色</label>
+      <select class="lang-select-big" id="pasteAssignmentRole">
+        <option value="assignment" selected>题目 / 要求</option>
+        <option value="reference">参考资料</option>
+      </select>
+      <textarea class="form-input paste-assignment-text" id="pasteAssignmentText" rows="12" placeholder="在此粘贴作业全文，例如：实验项目二：创建型设计模式实验…"></textarea>
+      <div class="paste-assignment-meta" id="pasteAssignmentMeta"></div>
+      <div class="revise-feedback-actions">
+        <button type="button" class="btn-secondary" id="pasteAssignmentCancel">取消</button>
+        <button type="button" class="btn-primary" id="pasteAssignmentConfirm">添加到清单</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 修订反馈模态框 -->
+  <div class="revise-feedback-overlay" id="reviseFeedbackModal" style="display:none">
+    <div class="revise-feedback-dialog">
+      <h3>✏️ 修订反馈</h3>
+      <p class="form-hint">请描述哪里需要改进，或直接提交使用默认反馈</p>
+      <textarea class="form-input revise-feedback-text" id="reviseFeedbackText" rows="4"></textarea>
+      <div class="revise-feedback-actions">
+        <button type="button" class="btn-secondary" id="reviseFeedbackCancel">取消</button>
+        <button type="button" class="btn-primary" id="reviseFeedbackSubmit">提交修订</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast通知 -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="compliance-ux.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

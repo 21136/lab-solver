@@ -1,0 +1,60 @@
+{
+  "name": "lab-solver",
+  "version": "1.0.0",
+  "description": "AI实验报告解题助手 - 自动解题并填充实验报告",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:win:safe": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-win.ps1"
+  },
+  "build": {
+    "appId": "com.labsolver.app",
+    "productName": "解题能手",
+    "executableName": "LabSolver",
+    "directories": {
+      "output": "../lab-solver-out"
+    },
+    "win": {
+      "target": "nsis",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "解题能手"
+    },
+    "extraResources": [
+      {
+        "from": "src/python",
+        "to": "python"
+      },
+      {
+        "from": "python-dist",
+        "to": "python-dist",
+        "filter": ["**/*"]
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/main/**/*",
+      "src/renderer/**/*",
+      "assets/**/*"
+    ]
+  },
+  "keywords": ["ai", "lab-report", "solver", "education"],
+  "author": "Lab Solver",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.0.0"
+  },
+  "dependencies": {
+    "axios": "^1.7.0"
+  }
+}
