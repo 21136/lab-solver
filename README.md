@@ -11,20 +11,6 @@
 
 ---
 
-## 预览
-
-| Step 1 上传 | Step 3 答案工作区（设计稿） |
-|:---:|:---:|
-| 拖拽 doc/docx/pdf、粘贴文字或上传题目截图 | 分节浏览、复制、导出 Markdown / docx / 代码包 |
-
-<p align="center">
-  <img src="docs/design/mockup-step3-variant-c-dashboard.png" alt="答案工作区界面预览" width="720" />
-</p>
-
-<sub>界面持续迭代中；更多 mockup 见 <a href="docs/design/">docs/design/</a>。欢迎补充真实运行截图至 <code>docs/screenshots/</code>。</sub>
-
----
-
 ## 核心能力
 
 - **多格式读题** — 支持 `.doc` / `.docx` / `.pdf`、粘贴纯文本、题目截图（OCR + Vision）
