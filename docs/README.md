@@ -22,8 +22,9 @@
 | [AGENT_ARCHITECTURE_V3.md](architecture/AGENT_ARCHITECTURE_V3.md) | V3 编排收敛、registry、反馈闭环 |
 | [IMPLEMENTATION_PHASES.md](architecture/IMPLEMENTATION_PHASES.md) | Phase 1～3 + V3 冲刺拆分 |
 | [AGENT_ERROR_HANDLING.md](architecture/AGENT_ERROR_HANDLING.md) | 预检 → 分类 → 策略修复 → 降级 |
-| [RUNTIME_LOGIC_ISSUES.md](architecture/RUNTIME_LOGIC_ISSUES.md) | **运行逻辑问题清单** RL1–RL12（✅ 已修复） |
+| [RUNTIME_LOGIC_ISSUES.md](architecture/RUNTIME_LOGIC_ISSUES.md) | **运行逻辑问题清单** RL1–RL12（✅）+ `code_cloze` 补充 BF45–BF49 |
 | [AGENT_OPTIMIZATION_PLAN.md](architecture/AGENT_OPTIMIZATION_PLAN.md) | **Agent 优化路线图** AO-P0 ✅ · AO-P1～P3 待做 |
+| [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](architecture/AGENT_IMPROVEMENT_RECOMMENDATIONS.md) | **Agent 建设性改进建议** IR-1～IR-17 · 两周排期 |
 
 ### [product/](product/) — 产品方向与路线图
 
@@ -54,6 +55,8 @@
 | [KEY_STORAGE.md](features/KEY_STORAGE.md) | Electron safeStorage 方案 |
 | [HOSTED_LLM_PROVIDERS.md](features/HOSTED_LLM_PROVIDERS.md) | **Agnes 托管 Key**（零配置 · 2026-06-06 ✅） |
 | [MODEL_REGISTRY.md](features/MODEL_REGISTRY.md) | LLM 模型 catalog、弃用别名、DeepSeek V4 迁移 |
+| [CODE_CLOZE_QUESTIONS.md](features/CODE_CLOZE_QUESTIONS.md) | **代码完形填空** 题型规格 · A/B/C ✅ |
+| [CODE_CLOZE_ROUTING.md](features/CODE_CLOZE_ROUTING.md) | **代码完形填空** 模式矩阵 / 改动边界 / PR 自检（改代码前必读） |
 
 ### [reference/](reference/) — 评审与过程文档
 
@@ -67,16 +70,18 @@
 
 | 文档 | 说明 |
 |------|------|
-| [V1_BUGFIX_LOG.md](logs/V1_BUGFIX_LOG.md) | BF1–BF42 修复记录（含 RL1–RL4 → BF28–BF31） |
+| [V1_BUGFIX_LOG.md](logs/V1_BUGFIX_LOG.md) | BF1–BF55 修复记录（含 RL1–RL12 → BF28–BF41；`code_cloze` → BF45–BF49；标准模式质量 → **BF50**；合规弹窗 → BF54；cloze 校验/UI → **BF55**） |
 
 ### [design/](design/) — UI 设计与 mockup
 
 | 文档 | 说明 |
 |------|------|
-| [README.md](design/README.md) | Step 3 mockup 选型 + Phase 1/2/3 进度 |
+| [README.md](design/README.md) | Step 3 mockup 选型 + Phase 1/2/3 + **逐屏优化**进度 |
 | [UI_PHASE2_NON_STEP3.md](design/UI_PHASE2_NON_STEP3.md) | Step 1/2/设置/历史改造总 spec |
 | [UI_PHASE2_PACK_A.md](design/UI_PHASE2_PACK_A.md) ~ [D](design/UI_PHASE2_PACK_D.md) | Pack A～D 实施记录 |
 | [UI_PHASE3_POLISH.md](design/UI_PHASE3_POLISH.md) | **Phase 3** 精致化抛光（审计 + Pack A～F） |
+| [UI_SCREEN_HOME.md](design/UI_SCREEN_HOME.md) | **逐屏优化** — 首页 Step 1 |
+| [STANDARD_MODE_QUALITY.md](design/STANDARD_MODE_QUALITY.md) | 标准模式质量感知强化（auto_remediate + Step2 说明条） |
 
 ---
 

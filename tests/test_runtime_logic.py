@@ -168,43 +168,41 @@ class TestRL3StandardRunDoneOk:
         with patch("agent.executor.emit_event", side_effect=lambda _rid, ev: events.append(ev)):
             with patch("agent.executor.release_run"):
                 with patch("agent.executor.clear_run_temp"):
-                    with patch("agent.executor.fallback_to_solve") as mock_fallback:
-                        with patch.dict(
-                            "agent.executor._MODULE_RUNNERS",
-                            runners,
-                            clear=False,
+                    with patch.dict(
+                        "agent.executor._MODULE_RUNNERS",
+                        runners,
+                        clear=False,
+                    ):
+                        with patch(
+                            "agent.orchestrator.RunOrchestrator.run_verify",
+                            return_value={"passed": True, "checks": []},
                         ):
                             with patch(
-                                "agent.orchestrator.RunOrchestrator.run_verify",
-                                return_value={"passed": True, "checks": []},
+                                "agent.orchestrator.RunOrchestrator.maybe_replan",
+                                return_value=False,
                             ):
-                                with patch(
-                                    "agent.orchestrator.RunOrchestrator.maybe_replan",
-                                    return_value=False,
-                                ):
-                                    _execute_standard_via_orchestrator(
-                                        "rl3-std", ctx, steps, use_fallback=use_fallback
-                                    )
+                                _execute_standard_via_orchestrator(
+                                    "rl3-std", ctx, steps, use_fallback=use_fallback
+                                )
         done = next(e for e in events if e.get("type") == "done")
-        return done, mock_fallback
+        return done
 
     def test_solve_lab_failure_without_fallback_is_not_ok(self):
         steps = [{"module": "solve_lab", "default_checked": True}]
-        done, mock_fallback = self._run_orchestrator(
+        done = self._run_orchestrator(
             self._std_ctx(),
             steps,
             {"solve_lab": lambda c, p: {"ok": False, "data": {}}},
             use_fallback=False,
         )
         assert done["ok"] is False
-        mock_fallback.assert_not_called()
 
     def test_fill_report_failure_does_not_block_ok_when_solve_succeeded(self):
         steps = [
             {"module": "solve_lab", "default_checked": True},
             {"module": "fill_report", "default_checked": True},
         ]
-        done, _ = self._run_orchestrator(
+        done = self._run_orchestrator(
             self._std_ctx(),
             steps,
             {
@@ -256,7 +254,7 @@ class TestRL3StandardRunDoneOk:
 class TestRL4StaleDocumentRetry:
     """RL4 — 执行阶段 document_ids 失效无兜底."""
 
-    def test_agent_run_returns_stale_documents_flag(self):
+    def test_agent_run_returns_stale_documents_flag_without_snapshot(self):
         from server import app
 
         client = app.test_client()
@@ -273,6 +271,38 @@ class TestRL4StaleDocumentRetry:
         assert data.get("stale_documents") is True
         assert "文档缓存已过期或不存在" in data.get("error", "")
 
+    def test_agent_run_uses_snapshot_when_documents_stale(self):
+        from server import app
+
+        client = app.test_client()
+        payload = {
+            "api_key": "sk-test",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "run_mode": "standard",
+            "document_ids": ["missing-doc-id"],
+            "steps": [{"module": "solve_lab", "default_checked": True}],
+            "plan_fingerprint": "sha256:dummy",
+            "agent_context_snapshot": {
+                "report_text": "实验报告正文",
+                "planner_input_text": "实验报告正文",
+                "metadata": {},
+                "question": {"type": "lab_report"},
+                "document_ids": ["missing-doc-id"],
+            },
+        }
+
+        with patch("server.verify_plan_fingerprint", return_value=(True, "sha256:dummy")):
+            with patch("server.acquire_run", return_value="rl4-snapshot-run"):
+                with patch("server.start_run_async") as mock_start:
+                    resp = client.post("/api/agent/run", json=payload)
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data.get("status") == "running"
+        assert data.get("run_id") == "rl4-snapshot-run"
+        assert mock_start.called
+
     def test_post_agent_run_retries_after_stale_documents(self):
         src = APP_JS.read_text(encoding="utf-8")
         assert "postAgentRunWithDocRetry" in src
@@ -281,6 +311,86 @@ class TestRL4StaleDocumentRetry:
             src,
         )
         assert "err.stale_documents" in src
+        assert "agent_context_snapshot" in src
+
+    def test_agent_run_sets_auto_remediate_max_rounds(self):
+        from server import app
+
+        client = app.test_client()
+        payload = {
+            "api_key": "sk-test",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "run_mode": "standard",
+            "document_ids": ["missing-doc-id"],
+            "steps": [{"module": "solve_lab", "default_checked": True}],
+            "plan_fingerprint": "sha256:dummy",
+            "auto_remediate_max_rounds": 2,
+            "agent_context_snapshot": {
+                "report_text": "实验报告正文",
+                "planner_input_text": "实验报告正文",
+                "metadata": {},
+                "question": {"type": "lab_report"},
+                "document_ids": ["missing-doc-id"],
+            },
+        }
+
+        with patch("server.verify_plan_fingerprint", return_value=(True, "sha256:dummy")):
+            with patch("server.acquire_run", return_value="rl8-remediate-rounds"):
+                with patch("server.start_run_async") as mock_start:
+                    resp = client.post("/api/agent/run", json=payload)
+
+        assert resp.status_code == 200
+        args = mock_start.call_args[0]
+        ctx = args[1]
+        assert ctx.get("auto_remediate_max_rounds") == 2
+        assert (ctx.get("settings") or {}).get("autoRemediateMaxRounds") == 2
+
+
+class TestIR3FailureThresholdConfig:
+    def test_failure_threshold_single_source(self):
+        from agent.types import max_consecutive_failures_for_mode
+        from agent.planner import MAX_CONSECUTIVE_FAILURES as planner_max
+        from agent.react_loop import MAX_CONSECUTIVE_FAILURES as react_max
+
+        assert planner_max == max_consecutive_failures_for_mode("standard")
+        assert react_max == max_consecutive_failures_for_mode("react")
+        assert max_consecutive_failures_for_mode("deep") == max_consecutive_failures_for_mode(
+            "standard"
+        )
+
+
+class TestIR2PlanRunSnapshot:
+    """IR-2 — plan→run 文档上下文快照兜底."""
+
+    @patch("server.plan_from_report")
+    def test_agent_plan_returns_context_snapshot(self, mock_plan):
+        from server import app
+
+        mock_plan.return_value = {
+            "steps": [{"module": "solve_lab", "params": {}, "default_checked": True}],
+            "clarifications": [],
+            "plan_fingerprint": "sha256:plan-fp",
+            "decision_log": [],
+            "prompt_version": "test",
+        }
+        client = app.test_client()
+        resp = client.post(
+            "/api/agent/plan",
+            json={
+                "api_key": "sk-test",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "report_text": "实验报告正文",
+                "question": {"type": "lab_report"},
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        snapshot = data.get("agent_context_snapshot") or {}
+        assert snapshot.get("report_text") == "实验报告正文"
+        assert snapshot.get("planner_input_text")
+        assert data.get("plan_fingerprint") == "sha256:plan-fp"
 
 
 class TestRL5PipelinePhaseSse:
@@ -307,8 +417,8 @@ class TestRL5PipelinePhaseSse:
                 on_phase({"phase": "understand_brief", "status": "ok", "detail": ""})
             return {"answer": "ok", "solve_session": {}, "pipeline_meta": {}}
 
-        with patch("agent.executor.solve_lab", side_effect=_fake_solve):
-            with patch("agent.executor.emit_event", side_effect=lambda _rid, ev: events.append(ev)):
+        with patch("agent.executor_solve.solve_lab", side_effect=_fake_solve):
+            with patch("agent.executor_solve.emit_event", side_effect=lambda _rid, ev: events.append(ev)):
                 _run_solve_lab(ctx, {"language": "python"})
 
         phase_events = [e for e in events if e.get("type") == "pipeline_phase"]
@@ -564,7 +674,7 @@ class TestRL8JarConsentMidRun:
         release_run(rid)
 
     def test_executor_passes_on_jar_consent_when_allow_curated_jars(self):
-        src = (ROOT / "src" / "python" / "agent" / "executor.py").read_text(encoding="utf-8")
+        src = (ROOT / "src" / "python" / "agent" / "executor_solve.py").read_text(encoding="utf-8")
         assert "wait_for_jar_consent" in src
         assert "on_jar_consent=on_jar_consent" in src
 
@@ -725,3 +835,197 @@ class TestRL12DeepDoneOk:
             "verification_report": {"passed": False, "checks": [{"id": "x", "passed": False}]},
         }
         assert compute_run_ok(ctx) is True
+
+
+class TestCodeClozeFallbackGuard:
+    def test_maybe_fallback_skips_code_cloze_run(self):
+        from agent.run_result import maybe_fallback_solve
+
+        ctx = {
+            "question": {"type": "code_cloze"},
+            "metadata": {"code_cloze": {"is_code_cloze": True, "blank_count": 4}},
+            "confirmed_steps": [
+                {"module": "solve_code_cloze", "default_checked": True},
+                {"module": "present_deliverable", "default_checked": True},
+            ],
+            "module_results": {"solve_code_cloze": {"ok": False, "data": {}}},
+        }
+        with patch("agent.fallback.fallback_to_solve") as mock_fb:
+            ran, err = maybe_fallback_solve(ctx, use_fallback=True)
+        assert ran is False
+        assert err is None
+        mock_fb.assert_not_called()
+
+
+class TestIR16RunEventPersist:
+    """IR-16a — run events jsonl + crash replay."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_run_control(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.RUN_EVENTS_DIR", tmp_path / "run_events")
+        from agent import run_control as rc
+
+        rc.reset_run_control_for_tests()
+        rc.configure_run_events(persist=True, max_files=30, max_age_days=7)
+        yield
+        rc.reset_run_control_for_tests()
+
+    def test_emit_event_writes_jsonl(self):
+        from agent.run_control import acquire_run, emit_event, release_run
+        from agent.run_event_store import event_path, read_events
+
+        rid = acquire_run("ir16-persist")
+        emit_event(rid, {"type": "progress", "module": "solve_lab", "status": "running"})
+        emit_event(rid, {"type": "done", "ok": True})
+        release_run(rid)
+        assert event_path(rid).is_file()
+        events = read_events(rid, 0)
+        assert [e["type"] for e in events] == ["progress", "done"]
+        assert events[0].get("ts")
+        assert events[0].get("seq") == 0
+
+    def test_get_run_events_replays_from_disk_after_memory_cleared(self):
+        from agent import run_control as rc
+        from agent.run_control import acquire_run, emit_event, get_run_events, release_run
+
+        rid = acquire_run("ir16-replay")
+        emit_event(rid, {"type": "progress", "module": "a"})
+        emit_event(rid, {"type": "done", "ok": True})
+        release_run(rid)
+        rc.reset_run_control_for_tests()
+        status, events = get_run_events(rid, since=0)
+        assert status == "completed"
+        assert [e["type"] for e in events] == ["progress", "done"]
+
+    def test_infer_orphaned_when_no_terminal_event(self):
+        from agent import run_control as rc
+        from agent.run_control import acquire_run, emit_event, get_run_events
+
+        rid = acquire_run("ir16-orphan")
+        emit_event(rid, {"type": "progress", "module": "solve_lab"})
+        rc.reset_run_control_for_tests()
+        status, events = get_run_events(rid, 0)
+        assert status == "orphaned"
+        assert len(events) == 1
+
+    def test_prune_old_files_respects_max_files(self, tmp_path, monkeypatch):
+        from agent.run_event_store import append_event, prune_old_files
+
+        monkeypatch.setattr("config.RUN_EVENTS_DIR", tmp_path / "run_events")
+        for i in range(5):
+            append_event(f"old-{i}", {"type": "done", "ok": True, "seq": 0})
+        removed = prune_old_files(max_files=2, max_age_days=365)
+        assert removed == 3
+        remaining = list((tmp_path / "run_events").glob("*.jsonl"))
+        assert len(remaining) == 2
+
+    def test_executor_thread_named_with_run_id(self):
+        src = (ROOT / "src" / "python" / "agent" / "executor.py").read_text(encoding="utf-8")
+        assert 'name=f"agent-run-{short_id}"' in src
+
+
+class TestIR16RunQueue:
+    """IR-16b — optional FIFO queue when busy."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_run_control(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.RUN_EVENTS_DIR", tmp_path / "run_events")
+        from agent import run_control as rc
+
+        rc.reset_run_control_for_tests()
+        rc.configure_run_events(persist=False)
+        started: list[str] = []
+
+        def _starter(run_id: str, payload: dict) -> None:
+            started.append(run_id)
+
+        rc.register_run_starter(_starter)
+        self._started = started
+        yield
+        rc.reset_run_control_for_tests()
+
+    def test_default_reject_raises_run_busy(self):
+        from agent.run_control import RunBusyError, acquire_run, release_run, try_acquire_or_queue
+
+        rid = acquire_run("ir16-busy-a")
+        try:
+            with pytest.raises(RunBusyError):
+                try_acquire_or_queue("ir16-busy-b", queue_mode="reject")
+        finally:
+            release_run(rid)
+
+    def test_fifo_queues_second_run(self):
+        from agent.run_control import (
+            acquire_run,
+            get_run,
+            get_run_events,
+            release_run,
+            try_acquire_or_queue,
+        )
+
+        rid1 = acquire_run("ir16-q1")
+        payload = {"ctx": {}, "steps_in": [], "use_fallback": True, "run_mode": "standard"}
+        rid2, status, pos = try_acquire_or_queue(
+            "ir16-q2",
+            queue_mode="fifo",
+            queue_payload=payload,
+        )
+        assert status == "queued"
+        assert pos == 1
+        assert get_run(rid2)["status"] == "queued"
+        _st, events = get_run_events(rid2, 0)
+        assert any(e.get("type") == "queued" for e in events)
+        release_run(rid1, "completed")
+        assert self._started == ["ir16-q2"]
+        assert get_run(rid2)["status"] == "running"
+        release_run(rid2, "completed")
+
+    def test_queue_full_raises(self):
+        from agent import run_control as rc
+        from agent.run_control import (
+            RunQueueFullError,
+            acquire_run,
+            release_run,
+            try_acquire_or_queue,
+        )
+
+        rid1 = acquire_run("ir16-full-1")
+        payload = {"ctx": {}, "steps_in": []}
+        rid2, status, _ = try_acquire_or_queue(
+            "ir16-full-2",
+            queue_mode="fifo",
+            queue_max_depth=1,
+            queue_payload=payload,
+        )
+        assert status == "queued"
+        with pytest.raises(RunQueueFullError):
+            try_acquire_or_queue(
+                "ir16-full-3",
+                queue_mode="fifo",
+                queue_max_depth=1,
+                queue_payload=payload,
+            )
+        release_run(rid1)
+        assert rc.get_run(rid2)["status"] == "running"
+        release_run(rid2)
+
+    def test_cancel_queued_does_not_start_next(self):
+        from agent.run_control import (
+            acquire_run,
+            cancel_run,
+            release_run,
+            try_acquire_or_queue,
+        )
+
+        rid1 = acquire_run("ir16-cancel-1")
+        payload = {"ctx": {}, "steps_in": []}
+        rid2, status, _ = try_acquire_or_queue(
+            "ir16-cancel-2",
+            queue_mode="fifo",
+            queue_payload=payload,
+        )
+        assert status == "queued"
+        assert cancel_run(rid2) is True
+        release_run(rid2, "cancelled")
+        assert self._started == []
+        release_run(rid1)

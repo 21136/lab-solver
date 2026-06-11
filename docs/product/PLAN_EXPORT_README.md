@@ -50,7 +50,7 @@
 |------|------|----------|
 | 平台 | 保留 Electron；BYOK 或 Agnes 托管 Key，不用 Cursor SDK | ✅ |
 | 核心流 | 子模块 + Planner 步骤计划 + 用户确认后执行 | ✅ 标准/深度/ReAct |
-| 默认省流 | `run_mode=standard`（约 2 次 LLM） | ✅ |
+| 默认省流 | `run_mode=standard`（V4 流水线；Planner+solve 约 2 次 LLM；**含 verify + 默认 auto_remediate 1 轮**） | ✅ |
 | 深度可选 | understand→plan→draft→preflight→reflect→execute | ✅ |
 | 运行模式 | 标准/深度/ReAct 三档；ReAct 含 **自动收尾** + `finalize_report` | ✅ |
 | UI | Step2 分节工作台；Step3 SSE + 校验修订 | ✅；Step1 多文档 + 粘贴题目 ✅ |

@@ -75,39 +75,70 @@
         <!-- 步骤1：上传 -->
         <div class="step-content active" id="step-1">
           <div class="step1-layout">
+            <header class="step1-hero">
+              <div class="step1-hero-text">
+                <h1 class="step1-hero-title">开始解题</h1>
+                <p class="step1-hero-subtitle">粘贴题目或上传报告，AI 分节生成可复制答案</p>
+              </div>
+              <ol class="step1-flow-hints" aria-label="解题流程">
+                <li class="step1-flow-hint is-active"><span class="step1-flow-num" aria-hidden="true">1</span>输入题目</li>
+                <li class="step1-flow-hint"><span class="step1-flow-num" aria-hidden="true">2</span>确认计划</li>
+                <li class="step1-flow-hint"><span class="step1-flow-num" aria-hidden="true">3</span>复制答案</li>
+              </ol>
+            </header>
             <div class="step1-grid">
-              <div class="upload-area" id="uploadArea"
+              <div class="upload-area upload-mode-paste" id="uploadArea"
                    ondragover="handleDragOver(event)"
                    ondrop="handleDrop(event)"
-                   ondragleave="handleDragLeave(event)"
-                   onclick="triggerAddDocuments()">
-                <div class="upload-drop-inner">
-                  <div class="upload-icon icon icon-xl" id="uploadIcon" data-icon="file-text"></div>
-                  <h2 id="uploadTitle">拖拽或点击添加文档</h2>
-                  <p class="upload-subhint" id="uploadAreaHint">支持 .doc / .docx / .pdf，可多次添加组成文档清单</p>
+                   ondragleave="handleDragLeave(event)">
+                <div class="upload-mode-tabs" onclick="event.stopPropagation()">
+                  <button type="button" class="upload-mode-tab active" data-mode="paste" onclick="setUploadInputMode('paste')">
+                    <span class="icon icon-sm" data-icon="clipboard-list"></span>粘贴题目
+                  </button>
+                  <button type="button" class="upload-mode-tab" data-mode="file" onclick="setUploadInputMode('file')">
+                    <span class="icon icon-sm" data-icon="folder"></span>上传文件
+                  </button>
                 </div>
-                <div class="upload-role-section" onclick="event.stopPropagation()">
-                  <span class="upload-role-label">文档角色类型</span>
-                  <div class="upload-role-hints" aria-label="支持的文档角色">
-                    <span class="role-hint-chip assignment"><span class="role-chip-dot" aria-hidden="true"></span>题目 / 要求</span>
-                    <span class="role-hint-chip fill_target"><span class="role-chip-dot" aria-hidden="true"></span>待填报告</span>
-                    <span class="role-hint-chip answer_template"><span class="role-chip-dot" aria-hidden="true"></span>范文 / 模版</span>
-                    <span class="role-hint-chip reference"><span class="role-chip-dot" aria-hidden="true"></span>参考资料</span>
+                <div class="upload-paste-panel" id="uploadPastePanel" onclick="event.stopPropagation()">
+                  <p class="upload-paste-lead">从超星、慕课等平台复制题目文字，粘贴到下方即可开始，<strong>无需上传文件</strong></p>
+                  <textarea class="form-input upload-paste-textarea" id="uploadPasteText" rows="10"
+                    placeholder="在此粘贴作业题目全文，例如：实验项目二：创建型设计模式实验…&#10;&#10;支持仅粘贴文字解题；若有空白实验报告模板，可切换到「上传文件」添加"></textarea>
+                  <div class="upload-paste-footer">
+                    <span class="upload-paste-meta form-hint" id="uploadPasteMeta"></span>
+                    <button type="button" class="btn-secondary btn-sm" onclick="confirmUploadPaste()">
+                      <span class="icon icon-sm" data-icon="plus"></span>添加到清单
+                    </button>
                   </div>
                 </div>
-                <div class="upload-actions" onclick="event.stopPropagation()">
-                  <button type="button" class="btn-secondary" id="addDocsBtn" onclick="triggerAddDocuments()">
-                    <span class="icon icon-sm" data-icon="folder"></span>添加文档
-                  </button>
-                  <button type="button" class="btn-ghost" id="pasteAssignmentBtn" onclick="openPasteAssignmentModal()">
-                    <span class="icon icon-sm" data-icon="clipboard-list"></span>粘贴题目 / 要求
-                  </button>
+                <div class="upload-file-panel is-hidden" id="uploadFilePanel">
+                  <div class="upload-drop-inner" onclick="triggerAddDocuments()">
+                    <div class="upload-icon icon icon-xl" id="uploadIcon" data-icon="file-text"></div>
+                    <h2 id="uploadTitle">拖拽或点击添加文档</h2>
+                    <p class="upload-subhint" id="uploadAreaHint">支持 .doc / .docx / .pdf，可多次添加组成文档清单</p>
+                  </div>
+                  <div class="upload-role-section" onclick="event.stopPropagation()">
+                    <span class="upload-role-label">文档角色类型</span>
+                    <div class="upload-role-hints" aria-label="支持的文档角色">
+                      <span class="role-hint-chip assignment"><span class="role-chip-dot" aria-hidden="true"></span>题目 / 要求</span>
+                      <span class="role-hint-chip fill_target"><span class="role-chip-dot" aria-hidden="true"></span>待填报告</span>
+                      <span class="role-hint-chip answer_template"><span class="role-chip-dot" aria-hidden="true"></span>范文 / 模版</span>
+                      <span class="role-hint-chip reference"><span class="role-chip-dot" aria-hidden="true"></span>参考资料</span>
+                    </div>
+                  </div>
+                  <div class="upload-actions" onclick="event.stopPropagation()">
+                    <button type="button" class="btn-secondary" id="addDocsBtn" onclick="triggerAddDocuments()">
+                      <span class="icon icon-sm" data-icon="folder"></span>添加文档
+                    </button>
+                  </div>
                 </div>
               </div>
 
               <div class="document-list-panel" id="documentListPanel">
                 <div class="panel-header">
-                  <h3><span class="icon icon-sm" data-icon="folder"></span>文档清单</h3>
+                  <h3>
+                    <span class="icon icon-sm" data-icon="folder"></span>文档清单
+                    <span class="doc-list-count is-hidden" id="documentListCount" aria-label="已添加文档数">0</span>
+                  </h3>
                   <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); openPasteAssignmentModal()">粘贴题目</button>
                   <button type="button" class="btn-secondary btn-sm" onclick="event.stopPropagation(); triggerAddDocuments()">+ 添加</button>
                 </div>
@@ -127,8 +158,8 @@
                             <div class="empty-state-illustration" aria-hidden="true">
                               <span class="icon icon-lg" data-icon="inbox"></span>
                             </div>
-                            <p class="empty-state-title">尚未添加文档</p>
-                            <p class="empty-state-hint">拖拽文件到上传区，或点击「+ 添加」</p>
+                            <p class="empty-state-title">还没有题目</p>
+                            <p class="empty-state-hint">在左侧粘贴文字，或切换到「上传文件」添加 docx / pdf</p>
                           </div>
                         </td>
                       </tr>
@@ -233,6 +264,8 @@
               <button class="btn-secondary" onclick="goToStep(1)">← 重新上传</button>
             </div>
 
+            <div class="step2-mode-banner" id="step2ModeBanner" role="status" aria-live="polite"></div>
+
             <!-- 检测摘要 hero -->
             <div class="detect-hero is-hidden" id="detectInfoCard">
               <div class="detect-hero-main">
@@ -280,6 +313,11 @@
               <span class="parse-ocr-banner-text" id="parseOcrBannerText"></span>
               <button type="button" class="btn-secondary btn-sm" id="parseOcrEnableBtn"
                 onclick="enableOcrAndReparse()">开启 OCR 并重解析</button>
+            </div>
+
+            <div class="code-cloze-parse-badge is-hidden" id="codeClozeParseBadge" role="status" aria-live="polite">
+              <span class="icon icon-sm" data-icon="file-text"></span>
+              <span id="codeClozeParseBadgeText"></span>
             </div>
 
             <details class="step2-questions-panel" id="step2QuestionsPanel">
@@ -491,6 +529,8 @@
                           <span class="icon icon-sm" data-icon="download"></span>导出 ▾
                         </button>
                         <div class="export-menu-panel is-hidden" id="exportMenuPanel" role="menu" aria-labelledby="exportMenuTrigger">
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="copyDeliverableCode(); closeExportMenu()"><span class="icon icon-sm" data-icon="copy"></span>复制代码</button>
+                          <button type="button" class="export-menu-item" role="menuitem" onclick="copyDeliverableDiagrams(); closeExportMenu()"><span class="icon icon-sm" data-icon="copy"></span>复制图表</button>
                           <button type="button" class="export-menu-item" role="menuitem" onclick="copyDeliverableMarkdown(); closeExportMenu()"><span class="icon icon-sm" data-icon="copy"></span>复制 Markdown</button>
                           <button type="button" class="export-menu-item" role="menuitem" onclick="downloadDeliverableMarkdown(); closeExportMenu()"><span class="icon icon-sm" data-icon="download"></span>下载 Markdown</button>
                           <button type="button" class="export-menu-item" role="menuitem" onclick="downloadDeliverableCodeZip(); closeExportMenu()"><span class="icon icon-sm" data-icon="download"></span>下载代码 zip</button>
@@ -544,9 +584,14 @@
                             <span class="icon icon-sm" data-icon="pie-chart"></span>图表
                           </button>
                         </div>
-                        <button type="button" class="btn-ghost btn-sm deliverable-preview-toggle" id="deliverablePreviewToggle" onclick="toggleDeliverablePreview(false)" aria-expanded="true" title="收起预览">
-                          <span class="icon icon-sm" data-icon="x"></span>
-                        </button>
+                        <div class="deliverable-preview-actions">
+                          <button type="button" class="btn-primary btn-sm" id="copyPreviewBtn" onclick="copyDeliverablePreview()" disabled>
+                            <span class="icon icon-sm" data-icon="copy"></span>复制代码
+                          </button>
+                          <button type="button" class="btn-ghost btn-sm deliverable-preview-toggle" id="deliverablePreviewToggle" onclick="toggleDeliverablePreview(false)" aria-expanded="true" title="收起预览">
+                            <span class="icon icon-sm" data-icon="x"></span>
+                          </button>
+                        </div>
                       </div>
                       <div class="deliverable-preview-body" id="deliverablePreviewBody">
                         <div class="deliverable-code-preview" id="deliverableCodePreview"></div>
@@ -736,7 +781,7 @@
                           <span class="icon icon-sm" data-icon="layout-list"></span>
                           标准
                         </span>
-                        <span class="form-hint run-mode-card-hint">生成计划 → 勾选步骤 → V4 流水线执行</span>
+                        <span class="form-hint run-mode-card-hint">V4 分阶段解题 + 内化验证 + 执行后自动校验（默认校验失败自动修 1 轮）</span>
                       </span>
                     </label>
                     <label class="run-mode-card">
@@ -808,6 +853,20 @@
                     </label>
                   </div>
                 </div>
+                <div class="form-group settings-advanced-block">
+                  <label>
+                    <input type="checkbox" id="autoFastTierForLightQuestionsSettings" checked onchange="onAutoFastTierSettingsChange()">
+                    轻量题型自动使用极速档位
+                  </label>
+                  <span class="form-hint">填空 / 纯理论等未手动改档位时，执行期解析为 fast（可省 token）。改过上方的极速/标准/稳妥后不再自动覆盖。</span>
+                </div>
+                <div class="form-group settings-advanced-block">
+                  <label>
+                    <input type="checkbox" id="enableParallelModuleStepsSettings" checked onchange="onParallelModuleStepsChange()">
+                    无依赖步骤并行执行
+                  </label>
+                  <span class="form-hint">例如 run_code 与 render_uml 同时跑，缩短尾段等待（IR-13b）。</span>
+                </div>
               </div>
             </section>
 
@@ -876,10 +935,36 @@
                 </div>
                 <div class="form-group">
                   <label>
-                    <input type="checkbox" id="autoRemediateSettings">
+                    <input type="checkbox" id="autoRemediateSettings" checked onchange="onAutoRemediateChange()">
                     校验未通过时自动修复一次（消耗 Token）
                   </label>
-                  <span class="form-hint">verify 失败后按建议局部重跑并再校验（最多 1 轮）</span>
+                  <span class="form-hint">标准 / 深度模式默认开启；verify 失败后按建议局部重跑并再校验（轮次可配置）</span>
+                </div>
+                <div class="form-group">
+                  <label for="autoRemediateMaxRoundsSettings">自动修复最大轮次（0-5）</label>
+                  <input
+                    type="number"
+                    class="form-input"
+                    id="autoRemediateMaxRoundsSettings"
+                    min="0"
+                    max="5"
+                    value="1"
+                    onchange="onAutoRemediateMaxRoundsChange()"
+                  >
+                  <span class="form-hint">0 表示仅校验不自动修复；建议 1-2 轮以控制耗时与 Token</span>
+                </div>
+                <div class="form-group">
+                  <label for="maxReplanRoundsSettings">重规划最大轮次（0-5）</label>
+                  <input
+                    type="number"
+                    class="form-input"
+                    id="maxReplanRoundsSettings"
+                    min="0"
+                    max="5"
+                    value="1"
+                    onchange="onMaxReplanRoundsChange()"
+                  >
+                  <span class="form-hint">连续模块失败时规则化调整计划；0 表示不 replan</span>
                 </div>
                 <div class="form-group settings-advanced-block" id="skillCandidatesPanel">
                   <h4 class="settings-subheading">技能候选（半自动 promote）</h4>
@@ -1059,8 +1144,10 @@
   <!-- Toast通知 -->
   <div class="toast-container" id="toastContainer"></div>
 
+  <script src="vendor/gsap.min.js"></script>
   <script src="icons.js"></script>
   <script src="compliance-ux.js"></script>
+  <script src="theory-motion.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

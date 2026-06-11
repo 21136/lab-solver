@@ -15,6 +15,7 @@ TEMP_DIR.mkdir(exist_ok=True)
 APP_DATA.mkdir(exist_ok=True)
 
 LOG_FILE = APP_DATA / "app.log"
+RUN_EVENTS_DIR = APP_DATA / "run_events"
 
 try:
     from docx import Document  # noqa: F401

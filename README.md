@@ -71,7 +71,7 @@ npm install
 npm start
 ```
 
-首次使用请在 **设置** 页选择 AI 提供商：选 **Agnes AI** 可免填 Key；选 DeepSeek 等则需填入 **API Key** 与模型名称。然后按引导完成免责声明确认。
+首次使用会弹出 **免责声明**：勾选条款后点「我已阅读并同意」。随后在 **设置** 页选择 AI 提供商：选 **Agnes AI** 可免填 Key；选 DeepSeek 等则需填入 **API Key** 与模型名称。
 
 ### 自行打包安装包（Windows，开发者）
 

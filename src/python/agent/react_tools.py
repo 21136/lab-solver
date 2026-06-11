@@ -72,9 +72,10 @@ def execute_tool(ctx: dict, action: str, params: dict | None) -> dict[str, Any]:
 
         p = dict(params or {}) if isinstance(params, dict) else {}
         # Inject default language from profile if not specified
-        if module == "solve_lab" and "language" not in p:
+        if module in ("solve_lab", "solve_code_cloze") and "language" not in p:
             profile_lang = (ctx.get("user_profile") or {}).get("default_language", "")
-            p["language"] = profile_lang or "python"
+            cloze_lang = ((ctx.get("metadata") or {}).get("code_cloze") or {}).get("language_hint")
+            p["language"] = cloze_lang or profile_lang or ("java" if module == "solve_code_cloze" else "python")
 
         if module == "finalize_report":
             from agent.react_finalize import execute_finalize_report
@@ -153,6 +154,19 @@ def _format_result_summary(module: str, result: dict, *, degraded: bool = False)
                 f"步骤分析: {(parsed.get('steps_analysis') or '')[:80]}..."
             )
         return f"解题失败: {data.get('error', '未知错误')}"
+
+    if module == "solve_code_cloze":
+        if ok:
+            parsed = data.get("parsed") or {}
+            blanks = parsed.get("blanks") or {}
+            n = len(blanks) if isinstance(blanks, dict) else 0
+            note = (parsed.get("pattern_note") or "")[:80]
+            return (
+                f"代码填空解答成功。共 {n} 个空号。"
+                + (f"考点: {note}..." if note else "")
+                + " 请 present_deliverable 汇编空号列表。"
+            )
+        return f"代码填空解答失败: {data.get('error', '未知错误')}"
 
     if module == "run_code":
         # Internal auto-fix succeeded (executor._fix_and_retry returned fix_code result)

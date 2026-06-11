@@ -102,7 +102,9 @@ Java 版本：openjdk version "17.0.13" ...
 
 ### 6.2 弹窗内容
 
-弹窗使用与合规引导相同的 `complianceModal` DOM 容器，显示四种语言的安装状态：
+弹窗使用与合规引导相同的 `complianceModal` DOM 容器，显示四种语言的安装状态。
+
+> **可见性约定**（BF54）：共用容器内 `#complianceModalCheckWrap` 等带 `.is-hidden` 的子节点须用 `classList` / `uiShow`·`uiHide` 切换，勿仅用 `style.display`。
 
 - ✅ 已安装 → 显示版本号
 - ❌ 未安装 → [⬇️ 下载] 按钮 + 安装说明

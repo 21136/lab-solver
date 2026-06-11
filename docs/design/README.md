@@ -13,7 +13,7 @@
 ![Variant A split panel](./mockup-step3-variant-a-split.png)
 
 - 左：分节 tab + 报告正文 +「复制本节」
-- 右：代码预览 + UML 缩略图
+- 右：代码预览 + UML 缩略图 +「复制代码/图表」
 - **优点**: 最贴近 V5 文档「左内容右预览」
 - **适合**: 宽屏桌面（≥ 1200px）
 
@@ -65,6 +65,8 @@
 | **UI-3** | ✅ | 2026-06-06：Step1 拖拽区 + role chip + 文档表格；Step2 高级选项折叠 |
 | **UI-4** | ✅ | 2026-06-06：三步条、导出并入 Step3、空状态统一、动效收尾 |
 | **Step3 完成导航** | ✅ | 2026-06-06：deliverable 主路径完成后页头 + `#exportActionBar` 显示「回到主页」（`startNew()`） |
+| **Step1 粘贴优先** | ✅ | 2026-06-08：默认内联粘贴题目，仅文字可解析（BF43）；`parse-report` 空 `fill_target` 修复（BF44） |
+| **Step3 预览复制** | ✅ | 2026-06-08：预览栏「复制代码/图表」+ 逐文件/逐图复制（BF43） |
 
 ## Phase 2 — 非 Step 3 改造（当前重点）
 
@@ -99,3 +101,19 @@ Phase 1～2 完成后 UI 复审结论：**架构正确，辨识度与细节仍�
 | P3-D | 节切换 / 侧栏动效（纯 CSS） | P1 | ✅ |
 | P3-E | Accent 偏靛 + 历史摘要（E1+E3；字体/纹理不做） | P1 | ✅ |
 | P3-F | 内联 style 清理、loading、工具箱对齐 | P2 | ✅ |
+
+---
+
+## 逐屏优化（2026-06-08 起）
+
+按界面逐个改造，一屏一文档、一 PR，避免全站大改回归。
+
+| 界面 | 文档 | 状态 |
+|------|------|------|
+| 首页 Step 1 | [UI_SCREEN_HOME.md](./UI_SCREEN_HOME.md) | ✅ 首版 |
+| Step 2 计划确认 | [STANDARD_MODE_QUALITY.md](./STANDARD_MODE_QUALITY.md) §Q3（`#step2ModeBanner`） | ✅ 质量说明条 |
+| Step 3 答案工作区 | — | 已定稿，仅 bugfix |
+| 设置 | [STANDARD_MODE_QUALITY.md](./STANDARD_MODE_QUALITY.md) §Q4（模式/自动修复文案） | ✅ 文案 |
+| 历史 | — | 待做 |
+
+**跨屏（Agent 质量）**：[STANDARD_MODE_QUALITY.md](./STANDARD_MODE_QUALITY.md) — 标准模式默认 `auto_remediate`、校验 Toast（2026-06-08）

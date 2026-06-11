@@ -73,6 +73,21 @@ def _parsed_text_blob(parsed: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def _code_cloze_blob(solve: dict) -> str:
+    parsed = solve.get("parsed") or {}
+    blanks = parsed.get("blanks") or {}
+    parts: list[str] = []
+    if isinstance(blanks, dict):
+        for key in sorted(blanks.keys(), key=lambda x: str(x)):
+            item = blanks.get(key) or {}
+            if isinstance(item, dict):
+                parts.append(str(item.get("answer") or ""))
+                parts.append(str(item.get("brief") or ""))
+            else:
+                parts.append(str(item))
+    return "\n".join(p for p in parts if p).strip()
+
+
 def _has_placeholders(text: str) -> Optional[str]:
     for pat in _PLACEHOLDER_PATTERNS:
         if re.search(pat, text, re.IGNORECASE):
@@ -160,31 +175,62 @@ def verify_answer(
     suggested: list[str] = []
 
     mr = ctx.get("module_results") or {}
-    solve = (mr.get("solve_lab") or {}).get("data") or (mr.get("solve_theory") or {}).get("data") or {}
+    solve = (
+        (mr.get("solve_lab") or {}).get("data")
+        or (mr.get("solve_code_cloze") or {}).get("data")
+        or (mr.get("solve_theory") or {}).get("data")
+        or {}
+    )
     parsed = solve.get("parsed") or {}
     steps = ctx.get("confirmed_steps") or (ctx.get("plan") or {}).get("steps") or []
     step_modules = {s.get("module") for s in steps if s.get("default_checked", True)}
 
-    # schema_complete
-    required = ["steps_analysis", "result_description", "summary", "code"]
-    if solve.get("type") == "theory" or "solve_theory" in step_modules and "solve_lab" not in step_modules:
+    solve_type = solve.get("type")
+    if solve_type == "code_cloze":
+        blanks = (solve.get("parsed") or {}).get("blanks") or {}
+        cloze_ok = isinstance(blanks, dict) and bool(blanks)
+        checks.append(
+            {
+                "id": "code_cloze_schema",
+                "ok": cloze_ok,
+                "message": "代码完形结构完整" if cloze_ok else "缺少 blanks 结构化答案",
+                "auto_fix": "revise_full" if not cloze_ok else None,
+            }
+        )
+        if not cloze_ok:
+            suggested.append("revise_full")
+    elif solve.get("type") == "theory" or "solve_theory" in step_modules and "solve_lab" not in step_modules:
         required = ["answer"]
         missing = [k for k in required if not (solve.get(k) or solve.get("answer"))]
+        schema_ok = not missing
+        checks.append(
+            {
+                "id": "schema_complete",
+                "ok": schema_ok,
+                "message": "结构完整" if schema_ok else f"缺少字段: {', '.join(missing)}",
+                "auto_fix": "revise_full" if not schema_ok else None,
+            }
+        )
+        if not schema_ok:
+            suggested.append("revise_full")
     else:
+        required = ["steps_analysis", "result_description", "summary", "code"]
         missing = [k for k in required if not (parsed.get(k) or (k == "code" and solve.get("code")))]
-    schema_ok = not missing
-    checks.append(
-        {
-            "id": "schema_complete",
-            "ok": schema_ok,
-            "message": "结构完整" if schema_ok else f"缺少字段: {', '.join(missing)}",
-            "auto_fix": "revise_full" if not schema_ok else None,
-        }
-    )
-    if not schema_ok:
-        suggested.append("revise_full")
+        schema_ok = not missing
+        checks.append(
+            {
+                "id": "schema_complete",
+                "ok": schema_ok,
+                "message": "结构完整" if schema_ok else f"缺少字段: {', '.join(missing)}",
+                "auto_fix": "revise_full" if not schema_ok else None,
+            }
+        )
+        if not schema_ok:
+            suggested.append("revise_full")
 
     blob = _parsed_text_blob(parsed) or (solve.get("answer") or "")
+    if solve_type == "code_cloze":
+        blob = _code_cloze_blob(solve) or blob
     ph = _has_placeholders(blob)
     checks.append(
         {
@@ -246,11 +292,15 @@ def verify_answer(
             )
 
     if "fill_report" in step_modules or "present_deliverable" in step_modules:
-        content_ready = bool(
-            parsed.get("steps_analysis")
-            and parsed.get("result_description")
-            and parsed.get("summary")
-        )
+        if solve_type == "code_cloze":
+            blanks = (solve.get("parsed") or {}).get("blanks") or {}
+            content_ready = isinstance(blanks, dict) and bool(blanks)
+        else:
+            content_ready = bool(
+                parsed.get("steps_analysis")
+                and parsed.get("result_description")
+                and parsed.get("summary")
+            )
         if "present_deliverable" in step_modules:
             checks.append(
                 {
@@ -350,21 +400,29 @@ def verify_answer(
         if not plag["ok"]:
             suggested.append("revise_full")
 
+    teacher_user_content = ctx.get("user_content")
+    if solve_type == "code_cloze":
+        # code_cloze has no report sections; map blank answers/brief into summary checks.
+        teacher_user_content = {"summary": blob, **(teacher_user_content or {})}
+
     checks.extend(
         verify_teacher_rules(
             parsed,
             ctx.get("teacher_constraints"),
-            ctx.get("user_content"),
+            teacher_user_content,
             sections_detected=ctx.get("sections_detected"),
         )
     )
 
     blocking_ids = {
-        "schema_complete",
         "no_placeholder",
         "code_runs",
         "constraint_present",
     }
+    if solve_type == "code_cloze":
+        blocking_ids.add("code_cloze_schema")
+    else:
+        blocking_ids.add("schema_complete")
     passed = not any(
         not c.get("ok") for c in checks if c.get("id") in blocking_ids
     )

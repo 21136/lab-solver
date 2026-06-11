@@ -7,24 +7,16 @@ Policy layers (standard / deep / react) decide *what* to run; orchestrator decid
 
 from __future__ import annotations
 
-import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from agent.decision_log import append_decision
 from agent.executor_dirty import note_module_completed, should_rerun_module
-from agent.planner import MAX_CONSECUTIVE_FAILURES, replan_incremental
+from agent.planner import replan_incremental
 from agent.registry import get_runner
 from agent.run_control import is_cancelled, map_api_error, pop_retry_module, set_last_error
-from agent.types import ModuleResult, PlanStep
-
-
-def orchestrator_enabled(ctx: dict) -> bool:
-    """Feature flag: ctx.use_orchestrator=False or LAB_SOLVER_USE_ORCHESTRATOR=0 disables."""
-    if ctx.get("use_orchestrator") is False:
-        return False
-    env = os.environ.get("LAB_SOLVER_USE_ORCHESTRATOR", "1")
-    return env.strip().lower() not in ("0", "false", "no", "off")
+from agent.types import ModuleResult, PlanStep, max_consecutive_failures_for_mode
 
 
 @dataclass
@@ -83,6 +75,20 @@ class RunOrchestrator:
         self.replan_count = 0
         self._llm_calls = 0
         self._auto_remediate_rounds = 0
+        self._max_consecutive_failures = max_consecutive_failures_for_mode(
+            (self.ctx.get("run_mode") or "standard")
+        )
+
+    def auto_remediate_max_rounds(self) -> int:
+        """Configurable verify auto-remediate rounds (IR-8)."""
+        ctx_val = self.ctx.get("auto_remediate_max_rounds")
+        settings_val = (self.ctx.get("settings") or {}).get("autoRemediateMaxRounds")
+        raw = ctx_val if ctx_val is not None else settings_val
+        try:
+            rounds = int(raw)
+        except (TypeError, ValueError):
+            rounds = 1
+        return max(0, min(5, rounds))
 
     def should_reuse(self, module: str) -> bool:
         """Delegate executor_dirty.should_rerun_module — return True when cache may be reused."""
@@ -167,6 +173,130 @@ class RunOrchestrator:
 
         return result
 
+    def _parallel_steps_enabled(self, opts: RunStepsOptions) -> bool:
+        settings = self.ctx.get("settings") or {}
+        val = settings.get("enableParallelModuleSteps")
+        if val is None:
+            val = settings.get("enable_parallel_module_steps")
+        if val is None:
+            return True
+        return bool(val)
+
+    def _run_parallel_batch(
+        self,
+        batch: list[tuple[int, PlanStep]],
+        *,
+        opts: RunStepsOptions,
+        stop_on_failure: bool,
+    ) -> bool:
+        """Run a parallel-safe module group. Returns True if run was cancelled."""
+        from agent.executor import _fail_result, module_failure_blocks_pipeline, run_module as executor_run_module
+
+        if is_cancelled(self.run_id):
+            return True
+
+        append_decision(
+            self.ctx,
+            agent=opts.decision_agent,
+            decision="run_parallel_batch",
+            target=",".join((s.get("module") or "") for _, s in batch),
+            reason="IR-13b parallel group",
+            emit=self.on_decision,
+        )
+
+        for index, step in batch:
+            module = step.get("module") or ""
+            self.emit(
+                {
+                    "type": "progress",
+                    "module": module,
+                    "index": index,
+                    "status": "running",
+                    "parallel": True,
+                }
+            )
+            if opts.log_step_decisions:
+                append_decision(
+                    self.ctx,
+                    agent=opts.decision_agent,
+                    decision="run_module",
+                    target=module,
+                    reason=step.get("reason") or "",
+                    emit=self.on_decision,
+                )
+
+        results_by_index: dict[int, tuple[str, ModuleResult]] = {}
+
+        def _run_one(index: int, step: PlanStep) -> tuple[int, str, ModuleResult]:
+            module = step.get("module") or ""
+            if is_cancelled(self.run_id):
+                return index, module, _fail_result(module, "已取消", step.get("params"))
+            try:
+                result = executor_run_module(self.ctx, step)
+            except Exception as e:
+                mapped = map_api_error(e)
+                result = _fail_result(module, mapped["error"], step.get("params"))
+            return index, module, result
+
+        with ThreadPoolExecutor(max_workers=len(batch)) as pool:
+            futures = [pool.submit(_run_one, idx, step) for idx, step in batch]
+            for fut in as_completed(futures):
+                if is_cancelled(self.run_id):
+                    for pending in futures:
+                        pending.cancel()
+                    return True
+                index, module, result = fut.result()
+                results_by_index[index] = (module, result)
+
+        for index, step in sorted(batch, key=lambda x: x[0]):
+            module, result = results_by_index[index]
+            self.ctx.setdefault("module_results", {})[module] = result
+            ok = bool(result.get("ok"))
+            if ok:
+                self.ctx["consecutive_failures"] = 0
+                if module not in self.completed_modules:
+                    self.completed_modules.append(module)
+                if opts.note_completion:
+                    note_module_completed(self.ctx, module)
+                self.emit(
+                    {
+                        "type": "progress",
+                        "module": module,
+                        "index": index,
+                        "status": "done",
+                        "parallel": True,
+                    }
+                )
+                continue
+
+            from agent.executor import progress_payload_for_module_result
+
+            result_data = result.get("data") or {}
+            err_msg = result_data.get("error", "失败")
+            if module_failure_blocks_pipeline(module, result):
+                self.ctx["consecutive_failures"] = int(self.ctx.get("consecutive_failures") or 0) + 1
+                if opts.set_last_error_on_fail:
+                    set_last_error(self.run_id, module, err_msg)
+            else:
+                self.ctx["consecutive_failures"] = 0
+            self.emit(progress_payload_for_module_result(module, result, index=index))
+
+            if stop_on_failure and module_failure_blocks_pipeline(module, result):
+                return False
+
+            if self.ctx["consecutive_failures"] >= self._max_consecutive_failures:
+                replanned = self.maybe_replan(
+                    module,
+                    err_msg,
+                    emit_plan_updated=opts.emit_plan_updated,
+                )
+                if replanned:
+                    self.ctx["_replan_restart"] = True
+                    return False
+                self.ctx["consecutive_failures"] = 0
+
+        return False
+
     def maybe_replan(
         self,
         failed_module: str,
@@ -177,11 +307,14 @@ class RunOrchestrator:
     ) -> bool:
         """Call replan_incremental; emit plan_updated when rounds increase. Returns True if replanned."""
         rounds_before = int(self.ctx.get("replan_rounds") or 0)
+        result_data = ((self.ctx.get("module_results") or {}).get(failed_module) or {}).get("data") or {}
+        error_category = str(result_data.get("error_category") or "").strip().lower()
         new_plan = replan_incremental(
             self.ctx,
             {
                 "failed_module": failed_module,
                 "error_summary": error_summary,
+                "error_category": error_category,
                 "completed_modules": completed if completed is not None else self.completed_modules,
             },
             emit=self.on_decision,
@@ -300,6 +433,36 @@ class RunOrchestrator:
                     i += 1
                     continue
 
+            if self._parallel_steps_enabled(opts):
+                from agent.parallel_groups import scan_parallel_batch
+
+                batch = scan_parallel_batch(
+                    steps,
+                    i,
+                    completed_modules=set(self.completed_modules),
+                    exclude_modules=opts.exclude_modules,
+                )
+                if batch and len(batch) >= 2:
+                    cancelled = self._run_parallel_batch(
+                        batch,
+                        opts=opts,
+                        stop_on_failure=stop_on_failure,
+                    )
+                    if cancelled:
+                        return self.completed_modules, True
+                    if self.ctx.pop("_replan_restart", None):
+                        steps = list((self.ctx.get("plan") or {}).get("steps") or steps)
+                        if opts.exclude_modules:
+                            steps = [
+                                s
+                                for s in steps
+                                if (s.get("module") or "") not in opts.exclude_modules
+                            ]
+                        i = _first_pending_index(steps, self.completed_modules)
+                        continue
+                    i = batch[-1][0] + 1
+                    continue
+
             self.emit(
                 {
                     "type": "progress",
@@ -361,7 +524,7 @@ class RunOrchestrator:
             if stop_on_failure and module_failure_blocks_pipeline(module, result):
                 return self.completed_modules, False
 
-            if self.ctx["consecutive_failures"] >= MAX_CONSECUTIVE_FAILURES:
+            if self.ctx["consecutive_failures"] >= self._max_consecutive_failures:
                 replanned = self.maybe_replan(
                     module,
                     err_msg,
@@ -380,12 +543,15 @@ class RunOrchestrator:
 
         return self.completed_modules, False
 
-    def run_verify(self, *, auto_remediate: bool = False, max_rounds: int = 1) -> dict:
+    def run_verify(self, *, auto_remediate: bool = False, max_rounds: int | None = None) -> dict:
         """verify_answer → optional auto_remediate: dirty → partial rerun → re-verify."""
         from agent.executor_dirty import mark_dirty_from_verify, modules_to_rerun_from_verify
         from agent.quality import verify_answer
 
         do_remediate = auto_remediate or bool(self.ctx.get("auto_remediate"))
+        max_rounds_effective = self.auto_remediate_max_rounds() if max_rounds is None else max(
+            0, min(5, int(max_rounds))
+        )
         remediate_rounds = 0
 
         verification = verify_answer(self.ctx)
@@ -394,7 +560,7 @@ class RunOrchestrator:
 
         while (
             do_remediate
-            and remediate_rounds < max_rounds
+            and remediate_rounds < max_rounds_effective
             and not verification.get("passed")
             and verification.get("suggested_actions")
         ):
@@ -467,9 +633,12 @@ class RunOrchestrator:
         from log_util import logi
 
         cycles: list[dict[str, Any]] = []
-        solve_ok = (self.ctx.get("module_results") or {}).get("solve_lab", {}).get("ok")
+        mr = self.ctx.get("module_results") or {}
+        solve_ok = bool((mr.get("solve_lab") or {}).get("ok")) or bool(
+            (mr.get("solve_code_cloze") or {}).get("ok")
+        )
         if not solve_ok:
-            logi("orchestrator", "finalize skip: solve_lab not ok")
+            logi("orchestrator", "finalize skip: no solve result")
             return cycles
 
         from modules.deliverable import is_content_only_output_mode
@@ -528,7 +697,7 @@ class RunOrchestrator:
 
     def build_run_summary(self) -> dict:
         """Structured run summary for SSE done event (V3-4)."""
-        from llm_client import get_llm_call_count
+        from llm_client import get_llm_call_count, get_llm_calls_by_phase
         from modules.solve_pipeline import pipeline_version, resolve_solve_quality_tier
 
         fill_mr = (self.ctx.get("module_results") or {}).get("fill_report")
@@ -547,10 +716,12 @@ class RunOrchestrator:
         )
         return {
             "mode": mode,
-            "solve_quality_tier": resolve_solve_quality_tier(settings),
+            "solve_quality_tier": resolve_solve_quality_tier(settings, self.ctx),
             "pipeline_version": pipeline_meta.get("version") or pipeline_version(settings),
             "code_status": code_status,
             "llm_calls": get_llm_call_count(),
+            "llm_calls_by_phase": get_llm_calls_by_phase(),
+            "prompt_versions": dict(self.ctx.get("prompt_versions") or {}),
             "replan_count": self.replan_count,
             "verify_pass": bool(verification.get("passed")),
             "auto_remediate_rounds": self._auto_remediate_rounds,

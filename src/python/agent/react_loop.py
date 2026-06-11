@@ -13,9 +13,19 @@ import json
 import re
 from typing import Any
 
+from agent.cloze_run import is_code_cloze_run, is_mixed_assignment_run, step_checked
 from agent.decision_log import append_decision
-from agent.prompt_budget import fit_budget
-from agent.react_prompts import REACT_SYSTEM_PROMPT, build_plan_checklist
+from agent.prompt_budget import estimate_tokens, fit_budget
+from agent.react_prompts import (
+    REACT_PROMPT_VERSION,
+    REACT_REPAIR_PROMPT_VERSION,
+    REACT_SYSTEM_PROMPT,
+    build_plan_checklist,
+    build_react_repair_prompt,
+    react_parse_error,
+    react_parse_needs_repair,
+    react_response_schema_hint,
+)
 from agent.react_tools import (
     build_tools_prompt,
     emit_react_cycle,
@@ -25,13 +35,18 @@ from agent.react_tools import (
 )
 
 _BOOTSTRAP_THOUGHT = "V4 流水线优先解题（bootstrap）"
+_BOOTSTRAP_CLOZE_THOUGHT = "代码完形填空优先解题（bootstrap）"
 from agent.run_control import emit_event, is_cancelled, release_run
+from agent.types import max_consecutive_failures_for_mode
 from llm_client import chat_messages
 from log_util import loge, logi
 
 MAX_REACT_ROUNDS = 16
-MAX_CONSECUTIVE_FAILURES = 4
+MAX_CONSECUTIVE_FAILURES = max_consecutive_failures_for_mode("react")
 MAX_RUN_CODE_FIX_CYCLES = 4
+REACT_TAIL_MAX_MESSAGES = 12
+REACT_TAIL_BUDGET_TOKENS = 2200
+REACT_OBSERVATION_BUDGET_TOKENS = 320
 
 # Regex for legacy THOUGHT/ACTION/PARAMS parsing (fallback)
 _RE_THOUGHT = re.compile(r"THOUGHT:\s*(.+?)(?=\nACTION:|\Z)", re.DOTALL | re.IGNORECASE)
@@ -60,8 +75,22 @@ def _try_parse_react_json(content: str) -> dict[str, Any] | None:
             if isinstance(obj, dict) and ("action" in obj or "thought" in obj):
                 return obj
         except (json.JSONDecodeError, TypeError):
+            from modules.lab_parse import _repair_truncated_json
+
+            repaired = _repair_truncated_json(raw)
+            if isinstance(repaired, dict) and ("action" in repaired or "thought" in repaired):
+                return repaired
             continue
     return None
+
+
+def _normalize_react_parsed(obj: dict[str, Any]) -> dict[str, Any]:
+    params = obj.get("params")
+    return {
+        "thought": str(obj.get("thought") or "").strip(),
+        "action": str(obj.get("action") or "").strip().lower(),
+        "params": params if isinstance(params, dict) else {},
+    }
 
 
 def _parse_react_response_legacy(content: str) -> dict[str, Any]:
@@ -99,13 +128,39 @@ def parse_react_response(content: str) -> dict[str, Any]:
     """Parse ReAct LLM output: JSON first, THOUGHT/ACTION fallback."""
     obj = _try_parse_react_json(content)
     if obj is not None:
-        params = obj.get("params")
-        return {
-            "thought": str(obj.get("thought") or "").strip(),
-            "action": str(obj.get("action") or "").strip().lower(),
-            "params": params if isinstance(params, dict) else {},
-        }
+        return _normalize_react_parsed(obj)
     return _parse_react_response_legacy(content)
+
+
+def _attempt_react_repair(
+    settings: dict,
+    raw_content: str,
+    *,
+    error_reason: str,
+    ctx: dict | None = None,
+) -> dict[str, Any] | None:
+    """Single-shot LLM repair when JSON-mode output is malformed (IR-11)."""
+    from agent.prompts import record_prompt_version
+
+    record_prompt_version(ctx, "react_repair", REACT_REPAIR_PROMPT_VERSION)
+    prompt = build_react_repair_prompt(raw_content, error_reason)
+    try:
+        chat_result = chat_messages(
+            settings,
+            [{"role": "user", "content": prompt}],
+            phase="react_repair",
+        )
+    except Exception as e:
+        loge("react", f"repair LLM call failed: {e}")
+        return None
+
+    repaired_raw = chat_result.get("content") or ""
+    repaired = parse_react_response(repaired_raw)
+    if repaired.get("action") and not react_parse_needs_repair(repaired_raw, repaired):
+        logi("react", f"repair succeeded action={repaired.get('action')}")
+        return repaired
+    logi("react", "repair did not yield a valid action")
+    return None
 
 
 # Backward-compatible alias for existing tests
@@ -116,7 +171,131 @@ def _solve_lab_checked(steps: list) -> bool:
     for step in steps:
         if step.get("module") == "solve_lab":
             return step.get("default_checked", True) is not False
-    return True
+    return not step_checked(steps, "solve_code_cloze")
+
+
+def _bootstrap_mixed_assignment_pipeline(
+    run_id: str,
+    ctx: dict,
+    steps: list,
+    *,
+    thought_history: list[dict[str, Any]],
+) -> bool:
+    """Run solve_theory / solve_code_cloze segments in plan order before ReAct."""
+    all_ok = True
+    for step in steps:
+        module = step.get("module") or ""
+        if module not in ("solve_theory", "solve_code_cloze"):
+            continue
+        if not step_checked(steps, module):
+            continue
+        params = dict(step.get("params") or {})
+        seg_id = params.get("segment_id")
+        already = any(
+            r.get("module") == module and r.get("segment_id") == seg_id
+            for r in (ctx.get("segment_solve_results") or [])
+        )
+        if already:
+            continue
+        tool_result = execute_tool(ctx, module, params)
+        ok = bool(tool_result.get("ok"))
+        all_ok = all_ok and ok
+        emit_react_cycle(
+            run_id,
+            0,
+            MAX_REACT_ROUNDS,
+            f"混排卷 bootstrap：{module}",
+            module,
+            ok,
+            tool_result.get("result_summary") or "",
+        )
+        thought_history.append(
+            {
+                "round": 0,
+                "max_rounds": MAX_REACT_ROUNDS,
+                "thought": f"混排卷 bootstrap：{module}",
+                "action": module,
+                "params": params,
+                "result_ok": ok,
+                "result_summary": tool_result.get("result_summary") or "",
+                "bootstrap": True,
+            }
+        )
+    return all_ok
+
+
+def _bootstrap_solve_pipeline(
+    run_id: str,
+    ctx: dict,
+    steps: list,
+    *,
+    thought_history: list[dict[str, Any]],
+) -> bool:
+    if is_mixed_assignment_run(ctx, steps):
+        return _bootstrap_mixed_assignment_pipeline(
+            run_id, ctx, steps, thought_history=thought_history
+        )
+    if is_code_cloze_run(ctx, steps):
+        return _bootstrap_solve_code_cloze_pipeline(
+            run_id, ctx, steps, thought_history=thought_history
+        )
+    return _bootstrap_solve_lab_pipeline(
+        run_id, ctx, steps, thought_history=thought_history
+    )
+
+
+def _bootstrap_solve_code_cloze_pipeline(
+    run_id: str,
+    ctx: dict,
+    steps: list,
+    *,
+    thought_history: list[dict[str, Any]],
+) -> bool:
+    results = ctx.get("module_results") or {}
+    if (results.get("solve_code_cloze") or {}).get("ok"):
+        return True
+    if steps and not step_checked(steps, "solve_code_cloze"):
+        return False
+
+    append_decision(
+        ctx,
+        agent="react_loop",
+        decision="bootstrap_solve_code_cloze",
+        target="solve_code_cloze",
+        reason="code_cloze: structured blanks before ReAct LLM",
+    )
+
+    params: dict[str, Any] = {}
+    for step in steps:
+        if step.get("module") == "solve_code_cloze":
+            params = dict(step.get("params") or {})
+            break
+    if not params.get("language"):
+        cloze = (ctx.get("metadata") or {}).get("code_cloze") or {}
+        lang = cloze.get("language_hint") or (ctx.get("user_profile") or {}).get("default_language")
+        if lang:
+            params["language"] = lang
+
+    tool_result = execute_tool(ctx, "solve_code_cloze", params)
+    ok = bool(tool_result.get("ok"))
+    summary = tool_result.get("result_summary") or ""
+
+    emit_react_cycle(
+        run_id, 0, MAX_REACT_ROUNDS, _BOOTSTRAP_CLOZE_THOUGHT, "solve_code_cloze", ok, summary
+    )
+    thought_history.append(
+        {
+            "round": 0,
+            "max_rounds": MAX_REACT_ROUNDS,
+            "thought": _BOOTSTRAP_CLOZE_THOUGHT,
+            "action": "solve_code_cloze",
+            "params": params,
+            "result_ok": ok,
+            "result_summary": summary,
+            "bootstrap": True,
+        }
+    )
+    return ok
 
 
 def _bootstrap_solve_lab_pipeline(
@@ -179,7 +358,112 @@ def _bootstrap_solve_lab_pipeline(
     return ok
 
 
-def _bootstrap_user_note(ctx: dict) -> str:
+def _empty_action_recovery_hint(ctx: dict, steps: list) -> str:
+    if is_mixed_assignment_run(ctx, steps) or is_code_cloze_run(ctx, steps):
+        return (
+            "你已经连续多轮未输出有效 ACTION。如果认为任务已完成请输出 ACTION: done。"
+            "如果需要继续，请选择: present_deliverable / done（勿 solve_lab / run_code）。"
+        )
+    return (
+        "你已经连续多轮未输出有效 ACTION。如果认为任务已完成请输出 ACTION: done。"
+        "如果需要继续，请选择: solve_lab / run_code / fill_report / render_uml / done。"
+    )
+
+
+def _compress_observation_content(content: str) -> str:
+    prefix = "[观察结果]\n"
+    if not content.startswith(prefix):
+        return content
+    body = content[len(prefix) :]
+    compact = fit_budget(
+        body,
+        budget_tokens=REACT_OBSERVATION_BUDGET_TOKENS,
+        preserve_sections=["错误", "输出", "异常", "Traceback"],
+    )
+    return f"{prefix}{compact}"
+
+
+def _compact_history_for_llm(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Keep system/bootstrap context + bounded tail for ReAct LLM calls (IR-7)."""
+    if len(history) <= 2:
+        return [
+            {
+                "role": str(m.get("role") or "user"),
+                "content": str(m.get("content") or ""),
+            }
+            for m in history
+        ]
+
+    head = [
+        {
+            "role": str(m.get("role") or "user"),
+            "content": str(m.get("content") or ""),
+        }
+        for m in history[:2]
+    ]
+    tail = history[2:]
+    selected_rev: list[dict[str, str]] = []
+    used_tokens = 0
+
+    for msg in reversed(tail):
+        role = str(msg.get("role") or "user")
+        content = str(msg.get("content") or "")
+        content = _compress_observation_content(content)
+        need = estimate_tokens(content)
+
+        if selected_rev and (
+            len(selected_rev) >= REACT_TAIL_MAX_MESSAGES
+            or (used_tokens + need) > REACT_TAIL_BUDGET_TOKENS
+        ):
+            break
+
+        if not selected_rev and need > REACT_TAIL_BUDGET_TOKENS:
+            content = fit_budget(
+                content,
+                budget_tokens=max(200, REACT_TAIL_BUDGET_TOKENS - 100),
+                preserve_sections=["错误", "输出", "异常", "Traceback"],
+            )
+            need = estimate_tokens(content)
+
+        selected_rev.append({"role": role, "content": content})
+        used_tokens += need
+
+    return head + list(reversed(selected_rev))
+
+
+def _bootstrap_user_note(ctx: dict, steps: list) -> str:
+    if is_mixed_assignment_run(ctx, steps):
+        theory_ok = any(
+            r.get("module") == "solve_theory" and r.get("data")
+            for r in (ctx.get("segment_solve_results") or [])
+        )
+        cloze_ok = any(
+            r.get("module") == "solve_code_cloze" and r.get("data")
+            for r in (ctx.get("segment_solve_results") or [])
+        )
+        if theory_ok or cloze_ok:
+            return (
+                "【系统】混排卷各段解题 bootstrap 已按文档顺序执行。"
+                "请调用 present_deliverable 汇编分段答案，或输出 action: done。"
+                "勿调用 solve_lab / run_code（简答 + 编号填空，不是完整实验报告）。"
+            )
+        return (
+            "本题是混排卷（简答 + 代码填空）。请按计划顺序调用 solve_theory / solve_code_cloze，"
+            "然后 present_deliverable，或输出 action: done。勿调用 solve_lab / run_code。"
+        )
+    if is_code_cloze_run(ctx, steps):
+        cloze_ok = bool((ctx.get("module_results") or {}).get("solve_code_cloze", {}).get("ok"))
+        if not cloze_ok:
+            return (
+                "本题是代码完形填空。请调用 solve_code_cloze，然后 present_deliverable，"
+                "或输出 action: done。勿调用 solve_lab / run_code。"
+            )
+        return (
+            "【系统】solve_code_cloze 已自动完成。"
+            "请调用 present_deliverable 汇编空号答案，或输出 action: done。"
+            "勿调用 solve_lab / run_code（编号填空，不是完整实验报告）。"
+        )
+
     solve_ok = bool((ctx.get("module_results") or {}).get("solve_lab", {}).get("ok"))
     if not solve_ok:
         return "请开始解题。若 solve_lab 失败可重试一次，否则输出 action: done。"
@@ -218,6 +502,7 @@ def run_react_loop(
         return REACT_SYSTEM_PROMPT.format(
             tool_descriptions=tools_prompt,
             plan_checklist=checklist,
+            react_schema_hint=react_response_schema_hint(),
         )
 
     system_msg = _refresh_system_message()
@@ -232,8 +517,8 @@ def run_react_loop(
     mode_note = _MODE_GUIDANCE.get(output_mode, _MODE_GUIDANCE["deliverable"])
 
     thought_history: list[dict[str, Any]] = []
-    _bootstrap_solve_lab_pipeline(run_id, ctx, steps, thought_history=thought_history)
-    bootstrap_note = _bootstrap_user_note(ctx)
+    _bootstrap_solve_pipeline(run_id, ctx, steps, thought_history=thought_history)
+    bootstrap_note = _bootstrap_user_note(ctx, steps)
 
     history: list[dict] = [
         {"role": "system", "content": system_msg},
@@ -270,6 +555,9 @@ def run_react_loop(
         target="run",
         reason=f"ReAct mode, max {MAX_REACT_ROUNDS} rounds",
     )
+    from agent.prompts import record_prompt_version
+
+    record_prompt_version(ctx, "react", REACT_PROMPT_VERSION)
 
     for round_num in range(1, MAX_REACT_ROUNDS + 1):
         if is_cancelled(run_id):
@@ -284,7 +572,8 @@ def run_react_loop(
         logi("react", f"round {round_num}/{MAX_REACT_ROUNDS} calling LLM…")
 
         try:
-            chat_result = chat_messages(settings, history, phase="react")
+            llm_history = _compact_history_for_llm(history)
+            chat_result = chat_messages(settings, llm_history, phase="react")
         except Exception as e:
             loge("react", f"LLM call failed round {round_num}: {e}")
             consecutive_failures += 1
@@ -295,8 +584,27 @@ def run_react_loop(
             )
             continue
 
-        # 2. Parse response
-        parsed = parse_react_response(chat_result.get("content") or "")
+        # 2. Parse response (JSON first; optional single repair for malformed JSON)
+        raw_content = chat_result.get("content") or ""
+        parsed = parse_react_response(raw_content)
+        if react_parse_needs_repair(raw_content, parsed):
+            error_reason = react_parse_error(raw_content, parsed)
+            append_decision(
+                ctx,
+                agent="react_loop",
+                decision="react_parse_repair",
+                target="parse",
+                reason=error_reason,
+            )
+            repaired = _attempt_react_repair(
+                settings,
+                raw_content,
+                error_reason=error_reason,
+                ctx=ctx,
+            )
+            if repaired:
+                parsed = repaired
+                empty_retries = 0
         thought = parsed["thought"]
         action = parsed["action"]
         action_params = parsed["params"]
@@ -336,10 +644,7 @@ def run_react_loop(
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     break
-                hint = (
-                    "你已经连续多轮未输出有效 ACTION。如果认为任务已完成请输出 ACTION: done。"
-                    "如果需要继续，请选择: solve_lab / run_code / fill_report / render_uml / done。"
-                )
+                hint = _empty_action_recovery_hint(ctx, steps)
                 history.append({"role": "user", "content": f"[系统提示]\n{hint}"})
                 empty_retries = 0
             else:

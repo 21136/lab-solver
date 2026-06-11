@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 服务器
   getServerPort: () => ipcRenderer.invoke('get-server-port'),
+  getServerStatus: () => ipcRenderer.invoke('get-server-status'),
 
   // API Key 加密存储（主进程 safeStorage）
   isApiKeyEncryptionAvailable: () => ipcRenderer.invoke('settings-store:is-encryption-available'),

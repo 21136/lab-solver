@@ -227,7 +227,7 @@ html, body { user-select: none; }
 
 **现状**（`index.html` `.deliverable-toolbar-actions`）:
 
-- Markdown（复制）、Markdown（下载）、docx、代码 zip、图表 zip、JSON — 6 控件横排
+- 已实现 dropdown：**复制代码 / 复制图表**（优先）+ Markdown、zip×2、JSON；外露 docx
 
 **目标线框**
 
@@ -240,7 +240,8 @@ html, body { user-select: none; }
 | 控件 | 类型 | 内容 |
 |------|------|------|
 | 主外露 | `btn-secondary btn-sm` | **下载 docx**（或用户调研后最常项） |
-| 导出 ▾ | `details` 或自定义 dropdown | Markdown 复制/下载、zip×2、JSON |
+| 导出 ▾ | 自定义 dropdown | **复制代码 / 复制图表**、Markdown 复制/下载、zip×2、JSON |
+| 预览栏 | `btn-primary btn-sm` `#copyPreviewBtn` | 随「代码 / 图表」标签切换；各卡片另有逐文件/逐图复制 |
 | 可选 | `btn-ghost` | 「更多」仅当 dropdown 不可用时 |
 
 **交互**
@@ -446,7 +447,8 @@ html, body { user-select: none; }
 ### 10.1 内联 `style` 清理
 
 - 将 `index.html` 中 `style="display:none"` 迁移为 `.is-hidden` 或 `[hidden]` + CSS
-- 动态面板由 `app.js` 统一 `classList.toggle('is-hidden')`
+- 动态面板由 `app.js` 统一 `classList.toggle('is-hidden')`（或 `uiShow` / `uiHide`）
+- **勿**对带 `.is-hidden` 的元素仅用 `style.display` 覆盖显示——`.is-hidden { display: none !important }` 会赢过内联样式（BF54：`compliance-ux.js` 免责勾选框曾因此不可见）
 
 ### 10.2 加载态
 

@@ -90,6 +90,32 @@ def test_run_busy():
     release_run(rid)
 
 
+def test_run_fifo_queue_mode():
+    from agent.run_control import (
+        get_run,
+        register_run_starter,
+        reset_run_control_for_tests,
+        try_acquire_or_queue,
+    )
+
+    started: list[str] = []
+    register_run_starter(lambda rid, _payload: started.append(rid))
+    reset_run_control_for_tests()
+    rid1 = acquire_run("phase2a-q1")
+    payload = {"ctx": {}, "steps_in": []}
+    rid2, status, pos = try_acquire_or_queue(
+        "phase2a-q2",
+        queue_mode="fifo",
+        queue_payload=payload,
+    )
+    assert status == "queued" and pos == 1
+    release_run(rid1)
+    assert started == ["phase2a-q2"]
+    assert get_run(rid2)["status"] == "running"
+    release_run(rid2)
+    reset_run_control_for_tests()
+
+
 def test_map_api_error():
     m = map_api_error(Exception("API HTTP 429: rate limit"))
     assert m["error_code"] == "rate_limit"

@@ -16,7 +16,7 @@
 | **编排 Core** | 三模式共享 `RunOrchestrator`、`compute_run_ok`、`complete_agent_run` | `orchestrator.py`, `run_result.py` | ✅ |
 | **解题流水线** | V4 分阶段：先代码沙箱验证 → 再写报告 | `modules/solve_pipeline.py` | ✅ 默认 v4 |
 | **注册表** | Planner catalog = ReAct tools 单源 | `registry.py` | ✅ |
-| **质量** | `verify_answer`、可选 `auto_remediate` | `quality.py`, `orchestrator.py` | ✅ 默认关 |
+| **质量** | `verify_answer`、`auto_remediate`（standard/deep 默认开） | `quality.py`, `orchestrator.py` | ✅ |
 | **可观测** | `decision_log`、`run_summary`（done 事件） | `orchestrator.py` | ✅ |
 | **运行逻辑** | SSE 假错误、done.ok、文档缓存、pipeline 子阶段等 | RL1–RL12 | ✅ |
 | **产品边界** | Deliverable 主输出、内化验证、fill 降级 | V5 | ✅ |
@@ -169,7 +169,7 @@ assert "emoji" not in session.result_description.lower()  # fixture #10
 
 | 模式 | 建议默认 |
 |------|----------|
-| standard | `auto_remediate: false` |
+| standard | `auto_remediate: true`（**2026-06-08 落地**；设置可关） |
 | deep | `true`，但仅 remediate **文字字段**（verify scope → revise，不触发整题 solve_lab） |
 | 已 `code_status=verified` | 禁止 auto_remediate 触发 `_run_solve_lab` |
 

@@ -19,6 +19,22 @@ from log_util import loge, logi
 from modules.lab_parse import parse_lab_json
 
 
+def _understand_plan_json_ok(raw: dict[str, Any]) -> bool:
+    """True when LLM output contains a usable understand+plan payload."""
+    if not isinstance(raw, dict) or not raw:
+        return False
+    plan_blob = raw.get("plan") if isinstance(raw.get("plan"), dict) else raw
+    steps = (plan_blob.get("steps") if isinstance(plan_blob, dict) else None) or raw.get("steps") or []
+    if not isinstance(steps, list) or not steps:
+        return False
+    understand = raw.get("understand")
+    if isinstance(understand, dict):
+        return bool(understand.get("summary") or understand.get("grading_points") or steps)
+    if isinstance(understand, str) and understand.strip():
+        return True
+    return bool(steps)
+
+
 def understand_and_plan(
     report_text: str,
     *,
@@ -88,6 +104,8 @@ def understand_and_plan(
             run_mode="deep",
         )
         raw = parse_lab_json(chat_result.get("content") or "")
+        if not _understand_plan_json_ok(raw):
+            raise ValueError("understand_plan JSON 无效或缺少 steps")
         understand = raw.get("understand") or {}
         if isinstance(understand, str):
             understand = {"summary": understand}

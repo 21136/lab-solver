@@ -477,8 +477,12 @@ class TestIm2bSettings:
     def test_settings_schema_ocr_defaults(self):
         from settings_schema import SETTINGS_DEFAULTS, SETTINGS_SCHEMA_VERSION
 
-        assert SETTINGS_SCHEMA_VERSION == 5
+        assert SETTINGS_SCHEMA_VERSION == 10
+        assert SETTINGS_DEFAULTS["autoFastTierForLightQuestions"] is True
+        assert SETTINGS_DEFAULTS["enableParallelModuleSteps"] is True
         assert SETTINGS_DEFAULTS["solvePipelineVersion"] == "v4"
+        assert SETTINGS_DEFAULTS["autoRemediate"] is True
+        assert SETTINGS_DEFAULTS["autoRemediateMaxRounds"] == 1
         assert SETTINGS_DEFAULTS["enableImageOcr"] is False
         assert SETTINGS_DEFAULTS["imageOcrLang"] == "chi_sim+eng"
         assert SETTINGS_DEFAULTS["imageReadingMode"] == "ocr_only"

@@ -32,7 +32,7 @@ V1 隐含模版形态：
 
 系统已 warn：`short_body_with_cover`、`possible_missing_figures` — 用户仍「束手无策」。
 
-**补充（2026-06-05）**：若题目在超星等平台、模板 docx 几乎为空（仅表头字段），可用 Step1 **「粘贴题目 / 要求」** + 上传空模板（`fill_target`），不必把题目先存成文件。
+**补充（2026-06-05 / 2026-06-08）**：若题目在超星等平台，Step 1 默认 **内联粘贴题目文字** 即可开始（`assignment_only`，无需任何文件；`POST /api/parse-report` 返回 `fill_target: null`，见 BF44）。若另有空白模板 docx，可切「上传文件」添加 `fill_target`；不必把题目先存成 `.txt`。
 
 **DA3 扩展（2026-06-05）— 超星式表格实验报告**：
 

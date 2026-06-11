@@ -11,6 +11,8 @@
 | `lab_report_table.docx` | 超星式表格报告 |
 | `variant_four_sections.docx` | 四节变体 |
 | `variant_three_sections.docx` | 三节变体 |
+| `code_cloze_singleton.docx` | Singleton 代码填空（R5 / `code_cloze` Word 导入金样本） |
+| `mixed_theory_cloze.docx` | 简答 + Singleton 填空混排（R8 / O10 金样本） |
 
 Regenerate:
 

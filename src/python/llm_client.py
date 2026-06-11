@@ -5,21 +5,45 @@ import re
 import urllib.error
 import urllib.request
 
-from agent.prompts import render_lab_report_prompt, render_theory_prompt
+from agent.prompts import (
+    render_code_cloze_prompt,
+    render_lab_report_prompt,
+    render_short_answer_prompt,
+    render_theory_prompt,
+)
 from log_util import logi
 from model_registry import merge_openai_payload, resolve_model_for_api, select_model_for_run_mode
 from modules.lab_parse import complete_lab_parsed, parse_lab_json
+from modules.code_cloze import normalize_code_cloze_parsed
 
 _llm_call_count = 0
+_llm_calls_by_phase: dict[str, int] = {}
+
+
+def _phase_bucket(phase: str) -> str:
+    bucket = (phase or "").strip()
+    return bucket if bucket else "unknown"
+
+
+def _record_llm_call(phase: str = "") -> None:
+    global _llm_call_count, _llm_calls_by_phase
+    _llm_call_count += 1
+    bucket = _phase_bucket(phase)
+    _llm_calls_by_phase[bucket] = int(_llm_calls_by_phase.get(bucket) or 0) + 1
 
 
 def reset_llm_call_count():
-    global _llm_call_count
+    global _llm_call_count, _llm_calls_by_phase
     _llm_call_count = 0
+    _llm_calls_by_phase = {}
 
 
 def get_llm_call_count():
     return _llm_call_count
+
+
+def get_llm_calls_by_phase() -> dict[str, int]:
+    return dict(sorted(_llm_calls_by_phase.items()))
 
 
 def _apply_model_resolution(
@@ -127,8 +151,7 @@ def chat_vision(
     Single-image vision completion (IM5).
     Returns ChatResult-shaped dict with content / usage.
     """
-    global _llm_call_count
-    _llm_call_count += 1
+    _record_llm_call(phase)
 
     api_key = settings.get("api_key") or settings.get("apiKey") or ""
     provider = (settings.get("provider") or "deepseek").strip().lower()
@@ -241,8 +264,7 @@ def chat_messages(
     Messages-array chat completion (ReAct and future multi-turn agents).
     Returns ChatResult-shaped dict.
     """
-    global _llm_call_count
-    _llm_call_count += 1
+    _record_llm_call(phase)
 
     api_key = settings.get("api_key", "")
     provider = (settings.get("provider") or "deepseek").strip().lower()
@@ -344,8 +366,7 @@ def chat(
     Generic chat completion for planner and future agent modules.
     Returns ChatResult-shaped dict (content, reasoning_content, phase, finish_reason, usage).
     """
-    global _llm_call_count
-    _llm_call_count += 1
+    _record_llm_call(phase)
 
     if provider == "custom" and custom_url:
         api_url = custom_url.rstrip("/") + "/chat/completions"
@@ -432,11 +453,10 @@ def call_ai(
     include_uml=False,
     format_spec=None,
     run_mode: str = "standard",
+    phase: str = "",
 ):
-    global _llm_call_count
-    _llm_call_count += 1
-
     q_type = question.get("type", "theory")
+    _record_llm_call(phase or f"solve_{q_type}")
     full_text = question.get("full_text", question.get("content", ""))
 
     if q_type == "lab_report":
@@ -459,6 +479,10 @@ def call_ai(
             format_constraints=fmt or "",
             language=user_lang or "",
         )
+    elif q_type == "code_cloze":
+        prompt = render_code_cloze_prompt(full_text)
+    elif q_type == "short_answer":
+        prompt = render_short_answer_prompt(full_text)
     else:
         lang = question.get("preferred_lang", "python")
         prompt = render_theory_prompt(full_text, lang=lang)
@@ -471,7 +495,9 @@ def call_ai(
         api_url = PROVIDER_URLS.get(provider, PROVIDER_URLS["deepseek"])
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    max_tokens = 8000 if q_type == "lab_report" else 4000
+    max_tokens = 8000 if q_type in ("lab_report", "code_cloze") else 4000
+    if q_type == "short_answer":
+        max_tokens = 6000
     payload = _apply_model_resolution(
         {
             "model": model,
@@ -506,12 +532,19 @@ def call_ai(
     if q_type == "lab_report":
         parsed = parse_lab_json(answer_text)
         parsed = complete_lab_parsed(parsed, answer_text)
+    elif q_type == "code_cloze":
+        parsed = normalize_code_cloze_parsed(
+            parse_lab_json(answer_text),
+            detected_blanks=((question.get("metadata") or {}).get("code_cloze") or {}).get("blanks"),
+        )
 
     code = parsed.get("code") or extract_code_block(answer_text, "java")
     code_files = parsed.get("code_files") or []
     main_file = parsed.get("main_file") or ""
     if q_type == "lab_report":
         lang = parsed.get("language", "java")
+    elif q_type == "code_cloze":
+        lang = parsed.get("language", question.get("preferred_lang", "java") or "java")
     else:
         lang = detect_lang_from_code(code) or "python"
     return {
@@ -545,9 +578,11 @@ def call_claude(api_key, model, prompt, q_type):
     with urllib.request.urlopen(req, timeout=120) as r:
         resp = json.loads(r.read().decode())
     answer = resp["content"][0]["text"]
-    parsed = parse_lab_json(answer) if q_type == "lab_report" else {}
+    parsed = parse_lab_json(answer) if q_type in ("lab_report", "code_cloze") else {}
     if q_type == "lab_report":
         parsed = complete_lab_parsed(parsed, answer)
+    elif q_type == "code_cloze":
+        parsed = normalize_code_cloze_parsed(parsed)
     return {
         "answer": answer,
         "code": parsed.get("code", extract_code_block(answer, "java")),

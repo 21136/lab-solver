@@ -161,6 +161,43 @@ THEORY_USER = (
     '请解答以下编程/理论题，给出完整{lang}代码（用```{lang}包裹）和思路说明：\n\n{full_text}'
 )
 
+SHORT_ANSWER_USER = """请你作为软件工程助教，逐题解答下面的简答题。
+
+【题目全文】
+{full_text}
+
+要求：
+- 每题单独一段，格式：**第N题** 或 **题目标题**，然后换行写答案
+- 答案用中文，简洁但完整，每题 3-8 句
+- 纯文字输出，不需要代码，不需要 JSON
+- 不要重复题目原文"""
+
+CODE_CLOZE_USER = """你是一名软件工程助教。请解答下面的「代码完形填空」题。
+
+【题面全文】
+{full_text}
+
+要求：
+1. 必须按空号逐一作答，输出结构化 JSON。
+2. answer 必须是可直接粘贴进代码的最小片段（除非题面已有分号，否则不要额外补分号）。
+3. 若是设计模式题，请给一句 pattern_note（简洁说明考点）。
+4. 如果题面可推断语言，用 language 字段标注（如 java/python/javascript），否则留空字符串。
+5. 仅输出 JSON，不要解释文字，不要 markdown。
+
+输出格式：
+```json
+{{
+  "type": "code_cloze",
+  "language": "java",
+  "blanks": {{
+    "1": {{ "answer": "abstract class", "brief": "抽象类修饰符" }},
+    "2": {{ "answer": "fo.read(fileName)", "brief": "读取文件" }}
+  }},
+  "completed_code": "",
+  "pattern_note": "本题考查外观模式的门面封装调用链"
+}}
+```"""
+
 
 PLANNER_USER = """你是一名大学实验报告解题助手。根据【实验报告全文】生成**执行计划**（只输出 JSON，不要其它文字）。
 
@@ -524,6 +561,19 @@ PROMPTS: dict[str, PromptTemplate] = {
         user_template=THEORY_USER,
         changelog="Phase 1.1: non-lab_report solve path",
     ),
+    "short_answer": PromptTemplate(
+        name="short_answer",
+        version="1.0.0",
+        user_template=SHORT_ANSWER_USER,
+        changelog="Theory Q&A: pure short-answer papers",
+    ),
+    "code_cloze": PromptTemplate(
+        name="code_cloze",
+        version="1.0.0",
+        user_template=CODE_CLOZE_USER,
+        output_schema="code_cloze_v1",
+        changelog="Phase B: code cloze structured blanks output",
+    ),
     "understand_plan": PromptTemplate(
         name="understand_plan",
         version="1.0.0",
@@ -569,6 +619,47 @@ PROMPTS: dict[str, PromptTemplate] = {
         changelog="Phase 2b B3: scoped revise",
     ),
 }
+
+
+def record_prompt_version(ctx: dict | None, key: str, version: str | None = None) -> None:
+    """Record a prompt template version into ctx.prompt_versions (IR-15)."""
+    if ctx is None or not key:
+        return
+    ver = version
+    if not ver:
+        tpl = PROMPTS.get(key)
+        ver = tpl.version if tpl else ""
+    if not ver:
+        return
+    versions = ctx.get("prompt_versions")
+    if not isinstance(versions, dict):
+        versions = {}
+        ctx["prompt_versions"] = versions
+    versions[key] = ver
+
+
+def merge_prompt_versions(ctx: dict | None, versions: dict[str, str] | None) -> None:
+    """Merge multiple prompt versions into ctx (IR-15)."""
+    if ctx is None or not versions:
+        return
+    for key, ver in versions.items():
+        if key and ver:
+            record_prompt_version(ctx, str(key), str(ver))
+
+
+def record_plan_prompt_version(ctx: dict | None, plan: dict | None) -> None:
+    """Record plan-phase prompt version from PlanResult (planner or understand_plan)."""
+    record_prompt_version(ctx, "planner", PROMPTS["planner"].version)
+    if not plan:
+        return
+    pv = (plan.get("prompt_version") or "").strip()
+    if not pv:
+        return
+    if pv == PROMPTS["understand_plan"].version:
+        record_prompt_version(ctx, "understand_plan", pv)
+    elif pv != PROMPTS["planner"].version:
+        record_prompt_version(ctx, "planner", pv)
+
 
 # Back-compat aliases for direct imports
 LAB_PROMPT = LAB_REPORT_USER
@@ -731,3 +822,17 @@ def render_theory_prompt(full_text: str, lang: str = "python") -> str:
 
     budgeted = fit_budget(full_text, budget_tokens=1500, preserve_sections=[])
     return PROMPTS["theory"].render(lang=lang, full_text=budgeted)
+
+
+def render_short_answer_prompt(full_text: str) -> str:
+    from agent.prompt_budget import fit_budget
+
+    budgeted = fit_budget(full_text or "", budget_tokens=2000, preserve_sections=[])
+    return PROMPTS["short_answer"].render(full_text=budgeted)
+
+
+def render_code_cloze_prompt(full_text: str) -> str:
+    from agent.prompt_budget import fit_budget
+
+    budgeted = fit_budget(full_text or "", budget_tokens=1800, preserve_sections=[])
+    return PROMPTS["code_cloze"].render(full_text=budgeted)

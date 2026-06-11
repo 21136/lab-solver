@@ -1,7 +1,7 @@
 # V1 错误修复日志
 
 **用途**：记录 V1 版本从测试/使用中发现的 bug 及其修复。  
-**最后更新**：2026-06-06
+**最后更新**：2026-06-08
 
 ---
 
@@ -1412,6 +1412,425 @@ Agent 执行完成并展示答案工作区后，用户无法明显回到 Step 1 
 
 ---
 
+## BF44 — 仅粘贴题目时解析崩溃（`fill_target` 为 None）
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 高（主路径阻断）  
+**影响范围**：`POST /api/parse-report`，`assignment_only` 无 `fill_target`
+
+### 现象
+
+仅粘贴题目文字点「解析并继续」时报：`解析失败: 'NoneType' object has no attribute 'get'`。
+
+### 根因
+
+`server.py` `parse_report_route` 返回 JSON 时写死 `parsed["fill_target"].get("split_at_heading")`，`assignment_only` 场景 `fill_target` 为 `None`。
+
+### 修复
+
+```python
+"split_at_heading": (parsed.get("fill_target") or {}).get("split_at_heading"),
+```
+
+`tests/test_phase2a2.py` 增加 `test_parse_report_route_assignment_only_text`。
+
+---
+
+## BF45 — 启动页长期停在「正在连接后端」（渲染层脚本崩溃 + ready 竞态）
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 阻断（主界面无法进入）  
+**影响范围**：Electron 启动阶段（Step0 loading overlay）
+
+### 现象
+
+- 后端日志显示已启动并健康检查 `200`（`/api/health` 正常）
+- 页面仍停在启动遮罩「正在连接后端…」
+- 控制台可复现语法错误：`Identifier 'copyBtn' has already been declared`
+
+### 根因
+
+1. `src/renderer/app.js` 中 `renderDeliverableWorkspace()` 重复声明 `const copyBtn`，导致渲染脚本初始化失败，`hideLoading()` 不执行。  
+2. 启动握手依赖一次性 `server-ready` 事件，存在事件先发/监听后绑的竞态；即使后端已就绪，渲染层也可能错过 ready。
+
+### 修复
+
+| 文件 | 改动 |
+|------|------|
+| `src/renderer/app.js` | 删除重复 `copyBtn` 声明；启动时增加 `getServerStatus()` 主动状态拉取兜底 |
+| `main.js` | 新增 `serverReady` / `serverStartError` 状态；新增 IPC `get-server-status` |
+| `preload.js` | 暴露 `getServerStatus` 给渲染层 |
+
+### 验收
+
+- `node --check src/renderer/app.js` 通过（无语法错误）
+- `npm run dev` 日志显示 `Python服务就绪` 且前端不再长期停在 loading
+- 即使 `server-ready` 事件丢失，渲染层通过 `getServerStatus()` 仍能完成 bootstrap
+
+---
+
+## BF46 — 重新生成计划后仍报「计划已过期」
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 阻断（标准模式无法启动执行）  
+**影响范围**：Step2 识题预览编辑过 `assignment_text` 后的 plan→run
+
+### 现象
+
+- 用户已点击「生成计划」，立即执行仍返回：`计划已过期，请重新生成计划`
+- 重生计划后再次执行，仍重复报错
+
+### 根因
+
+`plan_fingerprint` 基于 `planner_input_text` 计算。  
+计划阶段 `/api/agent/plan` 已使用识题预览覆盖的 `assignment_text` 重建了 `planner_input_text`，但执行阶段 `/api/agent/run` 在仅传 `document_ids` 时没有应用同样覆盖，导致服务端重算指纹与计划阶段不一致，触发 `stale_plan` 假阳性。
+
+### 修复
+
+| 文件 | 改动 |
+|------|------|
+| `src/renderer/app.js` | `executeAgentPlan()` 请求体追加 `assignment_text: agentAssignmentText` |
+| `src/python/server.py` | `/api/agent/run` 在 `resolve_agent_context(document_ids)` 后应用 `assignment_text` 覆盖（`apply_assignment_text_override`） |
+| `src/renderer/app.js` | `postAgentRunWithDocRetry()` 在 `stale_plan` 且后端返回 `plan_fingerprint` 时自动重试 1 次 |
+
+### 验收
+
+- 在识题预览里编辑题干 → 生成计划 → 执行计划：不再立即报「计划已过期」
+- 未编辑题干的普通场景行为不变
+
+---
+
+## BF47 — 代码完形题在合体/填表文档里漏检，误走普通编程题
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 阻断（`code_cloze` 场景输出整段代码，未按空号）  
+**影响范围**：`parse_documents_list` 多文档/合体文档路径（非纯 `assignment_only`）
+
+### 现象
+
+- 用户题面是“代码+编号空”，但计划仍走 `solve_lab` / ReAct 普通路径
+- Step3 显示完整代码/报告分节，而非 `code_cloze` 空号答案工作区
+
+### 根因
+
+`parse_documents.py` 里 `code_cloze` 检测在一个关键分支仅对 `layout == "assignment_only"` 生效；当题干来自合体文档拆分出的 `assignment_text`（`fill_target` 存在）时，检测被跳过，`question.type` 保持 `lab_report`。
+
+### 修复
+
+| 文件 | 改动 |
+|------|------|
+| `src/python/agent/parse_documents.py` | 统一使用 `assignment_text` 作为优先检测源；在 fill_target 分支与 assignment_only 分支都补 `detect_code_cloze` 兜底，并回写 `question.type/metadata.code_cloze` |
+| `src/python/server.py` | `/api/agent/plan` 与 `/api/agent/run` 增加 `code_cloze` 运行时二次判定，修复缓存题型陈旧导致的漏判 |
+### 验收
+
+- 合体文档（题干+模版）里含编号代码填空时，`question.type` 正确为 `code_cloze`
+- 计划路径命中 `solve_code_cloze` + `present_deliverable`
+- Step3 展示空号列表 + 复制全部空号答案
+
+---
+
+## BF55 — 代码完形填空 Step3 误显校验失败，约 30s 后才出现正确答案
+
+**发现时间**：2026-06-09  
+**严重度**：🟡 中（体验误导；答案实际已生成）  
+**影响范围**：`code_cloze` 题型、Step 3、`verify_answer`、`auto_remediate`、标准/深度/ReAct 共用收尾
+
+### 现象
+
+执行到 100%（`solve_code_cloze` + `present_deliverable` 均完成）后，Step 3 先弹出「校验清单」红叉：缺少 `steps_analysis` / `result_description` / `summary` / `code`，并建议「强制重写」。用户以为解题失败；等待约半分钟后才出现空号答案工作区。
+
+### 根因
+
+1. **IR-9 副作用**：`verify_answer` 为 `code_cloze` 合并通用检查后，仍追加 `schema_complete`（实验报告四字段）与 `deliverable_ready`（三节正文），对完形填空恒为假失败。
+2. **误触发 auto_remediate**：`revise_full` 映射到 `solve_lab`（非 `solve_code_cloze`），空跑一轮修复后才发 `done`。
+3. **UI 时机**：`verification` SSE 在执行中即渲染失败面板，而 `deliverable` 要到 `done`（或 remediate 结束）才写入工作区。
+
+### 修复
+
+- `quality.py`：`code_cloze` 仅校验 `code_cloze_schema` + 通用项；`deliverable_ready` 改查 `blanks`；阻断项用 `code_cloze_schema` 替代 `schema_complete`。
+- `executor_dirty.py`：完形填空 `revise_full` → `solve_code_cloze`。
+- `executor_common.py`：`present_deliverable` 完成时 SSE `progress` 附带 `deliverable`。
+- `app.js`：执行中不展示校验失败；`present_deliverable` 完成即渲染答案工作区。
+- 测试：`tests/test_phase2b.py::test_verify_code_cloze_passes_without_lab_fields`。
+
+### 验收
+
+- Singleton / Facade 完形填空：进度 100% 后立即见空号列表，无「缺 steps_analysis」类红叉。
+- 校验通过时不再误触发 `solve_lab` 重跑；`auto_remediate_rounds` 为 0。
+- `pytest tests/test_phase2b.py` 通过。
+
+---
+
+## BF54 — 首次免责声明勾选框不可见，主按钮无法点击
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 阻断（首次启动无法进入应用）  
+**影响范围**：`compliance-ux.js` 首次免责弹窗、`#complianceModalCheckWrap`
+
+### 现象
+
+启动后弹出「免责声明」，「我已阅读并同意」按钮呈主色但点击无反应（实际为 `disabled`），用户无法继续。
+
+### 根因
+
+`index.html` 中 `#complianceModalCheckWrap` 带 `.is-hidden`（`display: none !important`）。`showAppModal()` 仅用 `checkWrap.style.display = 'flex'` 试图显示勾选框，被 `!important` 覆盖，勾选框始终隐藏；同时 `requireCheckbox: true` 使主按钮在未勾选时保持 `disabled`。
+
+与 Pack F「动态面板用 `classList` 切换 `is-hidden`」约定不一致（`app.js` 的 `uiShow`/`uiHide` 已正确，合规模块未复用）。
+
+### 修复
+
+- `compliance-ux.js`：`showAppModal` 显示勾选区时 `classList.remove('is-hidden')`，隐藏/清理时 `classList.add('is-hidden')`
+
+### 验收
+
+- 清除 `localStorage.compliance` 后重启：弹窗底部可见「我已阅读并理解上述条款」勾选框  
+- 未勾选时主按钮禁用；勾选后可点「我已阅读并同意」并关闭弹窗  
+- JRE / jar 等复用 `complianceModal` 的弹窗仍正常（`app.js` 继续用 `uiHide(checkWrap)`）
+
+---
+
+## BF53 — docx 上传填空题在 fill_only 布局下漏写 metadata.code_cloze
+
+**发现时间**：2026-06-08（R5 / Phase D 预检）  
+**严重度**：🟡 中（Word 导入已 `build_question_from_document` 判 cloze，但 `parse_single_file` 二次探测用空 `assignment_text`）  
+**影响范围**：含实训表格封面 + 代码填空的 `.docx`（`layout=fill_only`）
+
+### 根因
+
+`parse_single_file` 仅在 `layout == assignment_only` 时将 `cloze_source` 回退到 `full_text`；`fill_target` + `fill_only` 时 `assignment_text` 为空，二次 `detect_code_cloze("")` 失败，可能丢失 bundle 级 `metadata.code_cloze`（与 BF47 同类：检测层分叉未对齐）。
+
+### 修复
+
+- `parse_report.py`：`extract_docx_code_cloze_text` / `detect_code_cloze_for_docx` 按 body 顺序抽取表格/等宽段落代码段；`extract_docx` 写入 `metadata.code_cloze`  
+- `parse_documents.py`：`assignment_text` 为空时一律回退 `full_text`；优先复用 `metadata.code_cloze` / `question.metadata.code_cloze`  
+- `tests/fixtures/code_cloze_singleton.docx` + `test_phase2a2.py` R5 用例  
+
+### 验收
+
+- 上传 Singleton 填空 `.docx` → `question.type=code_cloze`，`blank_count >= 3`  
+- `programming_lab.docx` → 仍 `lab_report`  
+
+---
+
+## BF52 — 遗留 `/api/solve` 未识别 code_cloze，恒走 solve_lab
+
+**发现时间**：2026-06-08  
+**严重度**：🟡 中（旧客户端 / Agent 降级路径粘贴填空题输出整段报告，无 `blanks`）  
+**影响范围**：`POST /api/solve`（backward compat）
+
+### 现象
+
+通过遗留 `/api/solve` 提交 Singleton / Facade 填空题 → 返回 `lab_report` 结构，无 `type: code_cloze` 与 `blanks`。
+
+### 根因
+
+`solve()` 写死 `solve_lab()`，未复用 R2 `tool_solve` 的 `detect_code_cloze` → `call_ai(type=code_cloze)` 分支（与 BF51 同类）。
+
+### 修复
+
+- `server.py`：抽取 `_solve_text_cloze_or_lab` 供 `tool_solve` 与 `solve()` 共用  
+- `solve()`：对 `question.full_text` / `text` 探测填空，cloze 走 `call_ai`，否则 `solve_lab`  
+
+### 验收
+
+- `/api/solve` + 填空例题 → `type: code_cloze` + `parsed.blanks`  
+- 普通实验报告 → 仍 `solve_lab`，`include_code` / `include_uml` 行为不变  
+- `tests/test_api_solve.py` 通过；`tests/test_toolbox.py::TestToolSolve` 无回归  
+
+---
+
+## BF51 — 工具箱 AI 解题未识别 code_cloze，恒走 solve_lab
+
+**发现时间**：2026-06-08  
+**严重度**：🟡 中（工具箱粘贴填空题输出整段实验报告，无空号结构）  
+**影响范围**：`POST /api/tool/solve`、工具箱 #2 AI 解题
+
+### 现象
+
+粘贴 Singleton / Facade 等代码填空题到工具箱 → 执行 AI 解题 → 返回 `lab_report` 结构（`steps_analysis` / 整段代码），无 `blanks`。
+
+### 根因
+
+`tool_solve` 写死 `question.type = lab_report` 并调用 `solve_lab()`，未复用 `detect_code_cloze` 与 `call_ai(type=code_cloze)`（与 BF49/BF50 同类：检测/计划已有能力，独立入口未分支）。
+
+### 修复
+
+- `server.py` `tool_solve`：`detect_code_cloze(text)` → cloze 走 `call_ai`，否则 `solve_lab`；响应带 `type`  
+- `app.js`：`formatSolveToolOutput` 在工具箱输出区展示空号列表  
+
+### 验收
+
+- 工具箱 + 填空例题 → `type: code_cloze` + `parsed.blanks`  
+- 普通实验报告 → 仍 `type: lab_report`，`solve_lab` 行为不变  
+- `tests/test_toolbox.py::TestToolSolve::test_code_cloze_branch` 通过  
+
+---
+
+## BF50 — 深度模式计划已是填空仍跑 solve_lab draft
+
+**发现时间**：2026-06-08  
+**严重度**：🟡 中（浪费 LLM 调用，可能污染 `module_results`）  
+**影响范围**：`deep_pipeline.execute_deep_run`、code_cloze 深度执行路径
+
+### 现象
+
+计划步骤为 `solve_code_cloze` + `present_deliverable`，深度模式仍先 emit `solve_lab phase=draft`，再 tail 跑填空。
+
+### 根因
+
+`execute_deep_run` 在计划中无 `solve_lab` 时仍合成默认 `solve_lab` 步骤并进入 draft/reflect 块（与 BF49 同类：计划层已识别，执行层未分支）。
+
+### 修复
+
+- 新增 `agent/cloze_run.py`：`is_code_cloze_run` 与 ReAct 共用  
+- `deep_pipeline.py`：填空计划跳过 draft/reflect，直接 `orch.run_steps(steps)`  
+- `react_loop.py`：改为从 `cloze_run` 导入，避免重复判断逻辑
+
+### 验收
+
+- 深度 + 填空题：日志无 `solve_lab phase=draft`，仅 `solve_code_cloze` → `present_deliverable`  
+- 普通 `lab_report` + 深度：仍走 `solve_lab` draft → reflect → tail  
+- `tests/test_run_modes_golden.py::test_deep_mode_code_cloze_skips_solve_lab_draft` 通过
+
+---
+
+## BF49 — 计划识别填空但 ReAct 仍跑 solve_lab
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 功能错误（填空题输出整段实验报告代码）  
+**影响范围**：ReAct 执行、`present_deliverable`、Step3 工作区
+
+### 现象
+
+计划步骤为 `solve_code_cloze`，执行时 bootstrap 与 LLM 仍调用 `solve_lab`；Step3 显示步骤/代码报告布局，而非空号列表。
+
+### 根因
+
+1. `solve_code_cloze` 未注册 ReAct 工具（`react_alias=None`），LLM 无法调用  
+2. `react_loop` AO-7 bootstrap 无条件跑 `solve_lab`  
+3. `applyAgentRunDone` 只读 `solve_lab` 数据；`build_deliverable` 未写 `type`/`code_cloze` 字段
+
+### 修复
+
+- `registry.py`：注册 `solve_code_cloze` ReAct 工具  
+- `react_loop.py`：填空计划 bootstrap `solve_code_cloze`  
+- `react_prompts.py` / `react_tools.py`：填空专用规则与结果摘要  
+- `deliverable.py`：交付物带 `type: code_cloze` 与 `code_cloze.blanks`  
+- `app.js`：完成时优先 `solve_code_cloze` 结果
+
+### 验收
+
+- 填空题执行日志首步为 `solve_code_cloze OK`，Step3 为空号列表 UI
+
+---
+
+## BF48 — 执行计划报 `cannot access local variable 'ctx'`
+
+**发现时间**：2026-06-08  
+**严重度**：🔴 阻断（计划已识别 code_cloze，点执行即 500）  
+**影响范围**：`POST /api/agent/run`（BF47 二次判定补丁引入）
+
+### 现象
+
+`启动执行失败: cannot access local variable 'ctx' where it is not associated with a value`
+
+### 根因
+
+`agent_run()` 在 `make_agent_context()` 之前用 `ctx.get(...)` 做 `code_cloze` 探测；`ctx` 此时尚未赋值，Python 3.11+ 抛 `UnboundLocalError`。
+
+### 修复
+
+`cloze_probe_text` 改为读取已存在的 `doc_ctx`（`assignment_text` / `planner_input_text` / `report_text`）。
+
+### 验收
+
+- 计划含 `solve_code_cloze` 时点击「执行计划」可正常启动 run，不再 500
+
+---
+
+## BF43 — Step1 仅粘贴文字不便 + Step3 代码/图只能 zip 下载
+
+**发现时间**：2026-06-08  
+**严重度**：🟡 中（UX）  
+**影响范围**：Step 1 题目输入、Step 3 答案工作区预览栏
+
+### 现象
+
+1. 用户从超星复制题目后，仍感觉必须上传 docx；粘贴入口在弹窗/次要按钮，主界面强调「添加文档」。
+2. 代码与 UML 图只能通过「下载代码 zip / 图表 zip」取出，无法在展示区直接复制。
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `index.html` | Step1 `upload-mode-tab`（默认「粘贴题目」）+ `#uploadPasteText`；预览栏 `#copyPreviewBtn` |
+| `app.js` | `setUploadInputMode` / `confirmUploadPaste`；`copyDeliverableCode` / `copyDeliverableDiagrams` 等 |
+| `styles.css` | `.upload-paste-panel`、`.deliverable-preview-actions` |
+| 文档 | `DESIGN.md`、`V5_PRODUCT_PIVOT.md`、`LAB_SOLVER_AGENT_PLAN.md` §3h、合规引导等 |
+
+### 验收
+
+- 仅粘贴题目文字 → 解析并继续 → 生成计划可跑通（`assignment_only`；若仍报 `NoneType .get`，见 **BF44**）
+- 预览栏「复制代码」「复制图表」可用；多图可逐张复制
+- zip 仍在「导出 ▾」，非唯一出口
+
+---
+
+## BF50 — 标准模式质量感知弱（默认不自动修复 + UI 无说明）
+
+**发现时间**：2026-06-08  
+**严重度**：🟡 中（体验 / 质量感知）  
+**影响范围**：`run_mode=standard`、Step 2、设置页、`POST /api/agent/run`
+
+### 现象
+
+用户反馈标准模式「好像没用」「老生成错误答案」。技术上标准模式已走 V4 流水线与 `verify_answer`，但校验失败后**默认不** `auto_remediate`，且 Step 2 未展示质量保障说明，易被误认为「只生成一次、错了也不管」。
+
+### 根因
+
+1. `resolveAutoRemediateForRun()` 与 `server.py` 仅在 `deep` 时默认 `auto_remediate=true`
+2. 设置「校验未通过时自动修复」默认未勾选且藏在高级区
+3. Step 2 无当前模式 / 质量档位 / 保障项展示
+
+### 修复
+
+- `app.js`：`autoRemediate` 默认 `true`（schema v7 迁移）；`resolveAutoRemediateForRun` 尊重设置
+- `server.py`：未传 `auto_remediate` 时 `standard`/`deep` 默认 `true`
+- `index.html` + `styles.css`：`#step2ModeBanner` 质量说明条；标准模式卡片文案
+- 校验 SSE / 执行结束 Toast 引导查看校验清单
+- 文档：[STANDARD_MODE_QUALITY.md](../design/STANDARD_MODE_QUALITY.md)
+
+### 验收
+
+- Step 2 可见标准模式保障说明；设置默认勾选自动修复
+- verify 失败时可触发 1 轮 auto_remediate（`tests/test_auto_remediate.py` 仍绿）
+
+---
+
+## IR-16 — 运行控制升级（落盘 + 可选队列）
+
+**时间**：2026-06-09  
+**条目**：[AGENT_IMPROVEMENT_RECOMMENDATIONS.md IR-16](../architecture/AGENT_IMPROVEMENT_RECOMMENDATIONS.md)
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| `run_event_store.py` | 新建：`{run_id}.jsonl` append / read / prune / `infer_status` |
+| `run_control.py` | `try_acquire_or_queue`、FIFO drain、`run_exists`、落盘 hook |
+| `config.py` | `RUN_EVENTS_DIR` |
+| `server.py` | 队列模式、`queue_full`、events 支持磁盘 run |
+| `executor.py` / `deep_pipeline.py` | daemon 线程 `agent-run-{id}` |
+| `settings_schema.py` | `persistRunEvents`、`runQueueMode` 等 |
+
+### 验收
+
+- `tests/test_runtime_logic.py::TestIR16RunEventPersist`
+- `tests/test_runtime_logic.py::TestIR16RunQueue`
+- `tests/test_phase2a.py::test_run_fifo_queue_mode`
+
+---
+
 ## 总结
 
-*日志版本：2026-06-06（BF42）。每次修复 bug 后更新本文档。RL1–RL12 详见 BF28–BF41 与 [RUNTIME_LOGIC_ISSUES.md](../architecture/RUNTIME_LOGIC_ISSUES.md)。*
+*日志版本：2026-06-09（IR-16）。每次修复 bug 后更新本文档。RL1–RL12 详见 BF28–BF41 与 [RUNTIME_LOGIC_ISSUES.md](../architecture/RUNTIME_LOGIC_ISSUES.md)。*

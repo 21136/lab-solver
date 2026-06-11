@@ -2,7 +2,7 @@
 
 ## 项目概览
 
-桌面 Electron + Python Flask 后端实验报告解题助手。默认 **BYOK**：用户自填 LLM API Key（DeepSeek/OpenAI/Claude/智谱/自定义）；可选 **Agnes AI 托管档**（内置 Key、零配置，见 `docs/features/HOSTED_LLM_PROVIDERS.md`）。上传实验报告 doc/docx/pdf（旧版 .doc 自动转换），AI 生成结构化答案（文字、代码、UML），用户在答案工作区审阅复制；高级区可选填回 Word。
+桌面 Electron + Python Flask 后端实验报告解题助手。默认 **BYOK**：用户自填 LLM API Key（DeepSeek/OpenAI/Claude/智谱/自定义）；可选 **Agnes AI 托管档**（内置 Key、零配置，见 `docs/features/HOSTED_LLM_PROVIDERS.md`）。Step 1 默认 **粘贴题目文字**（无需文件），也可上传 doc/docx/pdf（旧版 .doc 自动转换）；AI 生成结构化答案（文字、代码、UML），用户在答案工作区分节复制、预览区一键复制代码/图表；高级区可选填回 Word。
 
 ## 技术栈
 
@@ -74,7 +74,7 @@ lab-solver/
 │       │   ├── sections_config.py   # 分节工作台 normalize → fill_scope/user_content/teacher_constraints
 │       │   ├── template_analyzer.py # 答题模版分析 → format_spec
 │       │   ├── user_profile.py      # 用户画像 v1（default_language/prefer_uml）
-│       │   ├── parse_documents.py   # 多文档解析、角色猜测、合体拆分、粘贴文字 parse_inline_text
+│       │   ├── parse_documents.py   # 多文档解析、角色猜测、合体拆分、code_cloze 检测（BF47）
 │       │   ├── plan_feedback.py     # 计划反馈与行为学习接口
 │       │   ├── document_store.py    # 文档缓存（内存 TTL）
 │       │   ├── run_control.py       # 单任务锁、取消、按步重试
@@ -88,6 +88,7 @@ lab-solver/
 │       │   ├── run_code.py          # 编译运行代码（工具箱高级 / 内化验证）
 │       │   ├── uml.py               # 图表提取与渲染（PlantUML + DFD，最多 12 张）
 │       │   ├── fill_report.py       # 写回 docx；training_table 分格填表 + 单元格内嵌 UML/用户上传图
+│       │   ├── code_cloze.py        # detect_code_cloze + normalize_code_cloze_parsed
 │       │   ├── lab_parse.py         # 从答案 JSON 解析各字段
 │       │   ├── fix_code.py          # 编译错误修代码 + FIX_STRATEGIES 分类修复
 │       │   ├── preflight.py         # 零 LLM 语法/UML/schema/执行模式/emoji 预检
@@ -167,8 +168,12 @@ lab-solver/
 | `docs/product/V5_PRODUCT_PIVOT.md` | **V5 战略大改**：生成优先、验证内化、用户落笔；Deliverable 主输出 |
 | `docs/product/V4_MULTI_PHASE_SOLVE.md` | V4 分阶段 LLM 流水线（技术子方案，并入 V5-1） |
 | `docs/features/DIAGRAM_EXPANSION_PLAN.md` | 图表扩展：UML 种类、DFD、便携 Graphviz、Agent vs 工具箱分工 |
-| `docs/logs/V1_BUGFIX_LOG.md` | 运行时 bug 修复记录（BF1–BF31，含 SSE/done.ok/文档缓存重试 RL1–RL4） |
-| `docs/architecture/RUNTIME_LOGIC_ISSUES.md` | 运行逻辑审查清单（RL1–RL4 ✅，RL5–RL12 待修/设计债） |
+| `docs/features/CODE_CLOZE_QUESTIONS.md` | **代码完形填空** 题型规格（A/B/C ✅） |
+| `docs/features/CODE_CLOZE_ROUTING.md` | **代码完形填空** 模式路由与改动边界（standard/react/deep/toolbox） |
+| `docs/design/UI_SCREEN_HOME.md` | **逐屏 UI** — 首页 Step 1（2026-06-08 ✅） |
+| `docs/design/STANDARD_MODE_QUALITY.md` | **标准模式**质量感知强化（auto_remediate 默认开 + Step2 说明条） |
+| `docs/logs/V1_BUGFIX_LOG.md` | 运行时 bug 修复记录（BF1–BF50，含 RL1–RL12、code_cloze BF45–BF49） |
+| `docs/architecture/RUNTIME_LOGIC_ISSUES.md` | 运行逻辑审查清单（RL1–RL12 ✅；2026-06-08 code_cloze 补充） |
 
 ## 核心 Agent 流程
 
@@ -181,7 +186,7 @@ lab-solver/
   → revise_answer (不满意时) + fill_report 写回 docx
 ```
 
-**运行模式**：`run_mode=standard` (~2 次 LLM)；`run_mode=deep` (DeepPipeline ~3-4 次)；`run_mode=react` (ReAct Loop ~5-12 次；循环内可调用 `present_deliverable`；收尾仍**自动补跑**缺失的 UML/交付；`finalize_report` 一键收尾)。
+**运行模式**：`run_mode=standard`（V4 流水线 + 内化验证 + 执行后 `verify_answer`；**2026-06-08 起默认 `auto_remediate` 校验失败自动修 1 轮**；无执行前 reflect）；`run_mode=deep` (DeepPipeline ~3-4 次，含 understand + reflect 审稿)；`run_mode=react` (ReAct Loop ~5-12 次；循环内可调用 `present_deliverable`；收尾仍**自动补跑**缺失的 UML/交付；`finalize_report` 一键收尾)。**质量档位** `solveQualityTier`（极速/标准/稳妥）与运行模式独立，控制 V4 修复深度。**`code_cloze` 题型**：计划走 `solve_code_cloze`；ReAct bootstrap 优先 cloze 而非 `solve_lab`（见 `docs/features/CODE_CLOZE_QUESTIONS.md`）。详见 `docs/design/STANDARD_MODE_QUALITY.md`。
 
 **工具箱模式**：Step 2 顶部模式切换 Tab（引导模式 / 工具箱模式）。工具箱提供 8 个独立工具卡片：解析文档 → AI 解题 → 运行代码（高级）/ **图表渲染** → 填写报告（实验性），以及 3 个辅助工具（修复代码、校验答案、修订答案）。**图表渲染**支持 `diagrams` JSON 数组（PlantUML + 标准 DFD，最多 12 张）。**修复代码**成功后会写回 `#2` 并同步到 `#3 运行代码` 输入框。详见 `docs/v2/V2_TOOLBOX_MODE.md`。
 
@@ -210,13 +215,13 @@ lab-solver/
 
 - **evidence 门禁**：步骤存在性由报告原文 `evidence` 支撑，画像/模版只能影响 params
 - **指纹校验**：plan_fingerprint = sha256(sections_config + document_ids + split_idx + layout)，sections 变更 → 409 stale_plan
-- **多文档角色**：assignment（题目）、fill_target（待填报告）、answer_template（范文/模版）、reference（参考资料）；assignment 也可经 Step 1 **粘贴**（`text_content`，无需文件）
+- **多文档角色**：assignment（题目）、fill_target（待填报告）、answer_template（范文/模版）、reference（参考资料）；assignment 可经 Step 1 **内联粘贴**（`text_content`，**仅文字即可解题**）；填表才必填 `fill_target`
 - **合体拆分**：单 docx 前半题目+后半待填 → 在 `三、实验步骤` 处 split
 - **分节工作台**：sections_config.normalize() → fill_scope + user_content + teacher_constraints
 - **fill_mode**：auto/skip/preserve/generate_only/user_provided（每节独立）
 - **日志脱敏**：log_util 过滤 api_key、Bearer token、sk- 前缀
 
-## 当前实现状态 (2026-06-06)
+## 当前实现状态 (2026-06-08)
 
 **V1 已完成**：Phase 1/2a/2b/3/3b 全部 27/27 todo completed。
 - 标准/深度 Agent、分节工作台、多文档（前后端）、verify/revise、PDF 读/导出、compliance、safeStorage、template 整合
@@ -231,6 +236,9 @@ lab-solver/
 - **L4.1** ✅ — Agent 错误处理增强
 - **IM1–IM5** ✅ — 识图全链路（2026-06-06）：枚举 · OCR · 扫描 PDF · 题图上传 · Vision hybrid opt-in · O30 预览
 - **phase2-multi-doc** ✅ — 多文档 UI + Step1 粘贴题目/要求
+- **step1-paste-first** ✅ — Step1 默认内联粘贴、仅文字可解析（2026-06-08）
+- **step3-copy-preview** ✅ — 答案工作区预览栏复制代码/图表（2026-06-08）
+- **bf44-parse-assignment-only** ✅ — `assignment_only` 时 `parse-report` 不再因 `fill_target=None` 崩溃（2026-06-08）
 - **skill-system** ✅ — 技能注册表 + Agent 洞察学习
 - **toolbox-mode** ✅ — 工具箱模式：9 条独立 API + Step 2 模式切换 + 前端工具面板（#5 图表渲染含 DFD）
 - **doc-conversion** ✅ — .doc（旧版 Word）格式支持：Word COM / LibreOffice headless 自动转换 .docx，SHA-256 缓存，解析+填表全链路覆盖
@@ -241,7 +249,9 @@ lab-solver/
 - **UI-C** 📝 — 一图多题自动拆分（当前 `multi_question_in_image` warn + O30 手改）
 - **UI-2～4** ✅ — Step3 三栏、Step1/2 减负、三步条（见 `DESIGN.md` §10）
 - **step3-home-nav** ✅ — Step3 deliverable 完成后「回到主页」（页头 + 底栏，`startNew()`；见 BF42）
-- **UI Phase 2 P2-A/B** ✅ — Step1 双栏 + Step2 hero/卡片/sticky（见 `docs/design/UI_PHASE2_PACK_*.md`）；**P2-C/D** 📋 设置/历史/壳层
+- **UI Phase 2 P2-A～D** ✅ — Step1 双栏、Step2 hero、设置 nav、历史卡片（见 `docs/design/UI_PHASE2_PACK_*.md`）
+- **ui-screen-home** ✅ — 首页 Step1 逐屏优化：页头、粘贴区层次、文档角标（`docs/design/UI_SCREEN_HOME.md`）
+- **standard-mode-quality** ✅ — 标准模式默认 auto_remediate、Step2 `#step2ModeBanner`、设置文案（`docs/design/STANDARD_MODE_QUALITY.md`；BF50）
 
 ### 思考过程导出（2026-06-05）
 

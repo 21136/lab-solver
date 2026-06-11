@@ -13,6 +13,42 @@ from agent.registry import known_module_ids
 
 KNOWN_MODULE_IDS = known_module_ids()
 
+# Shared failure thresholds (single source of truth across modes).
+MAX_CONSECUTIVE_FAILURES_BY_MODE: dict[str, int] = {
+    "standard": 3,
+    "deep": 3,
+    "react": 4,
+}
+MAX_CONSECUTIVE_FAILURES_DEFAULT = MAX_CONSECUTIVE_FAILURES_BY_MODE["standard"]
+
+
+def max_consecutive_failures_for_mode(mode: str) -> int:
+    return MAX_CONSECUTIVE_FAILURES_BY_MODE.get(
+        (mode or "").strip().lower(),
+        MAX_CONSECUTIVE_FAILURES_DEFAULT,
+    )
+
+
+DEFAULT_MAX_REPLAN_ROUNDS = 1
+MAX_REPLAN_ROUNDS_LIMIT = 5
+
+
+def max_replan_rounds_for_ctx(ctx: dict | None) -> int:
+    """Resolve replan round cap from run ctx or settings (IR-12)."""
+    if not ctx:
+        return DEFAULT_MAX_REPLAN_ROUNDS
+    raw = ctx.get("max_replan_rounds")
+    if raw is None:
+        settings = ctx.get("settings") or {}
+        raw = settings.get("maxReplanRounds")
+    if raw is None:
+        return DEFAULT_MAX_REPLAN_ROUNDS
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_REPLAN_ROUNDS
+    return max(0, min(MAX_REPLAN_ROUNDS_LIMIT, val))
+
 # V5-4: experimental fill must not block deliverable / answer workspace.
 NON_BLOCKING_MODULES = frozenset({"fill_report"})
 
@@ -33,6 +69,7 @@ class DecisionLogEntry(TypedDict, total=False):
     timestamp: str
     agent: str
     decision: str
+    source: str
     target: str
     reason: str
     evidence: str

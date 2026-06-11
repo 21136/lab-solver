@@ -11,7 +11,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src" / "python"))
 
+from unittest.mock import patch  # noqa: E402
+
+import pytest  # noqa: E402
+
 from agent.planner import (  # noqa: E402
+    apply_question_type_overrides,
+    adjust_plan_for_code_cloze,
     adjust_plan_for_skip_validation,
     adjust_plan_for_v4_pipeline,
     adjust_plan_theory_only,
@@ -25,6 +31,8 @@ from agent.planner import (  # noqa: E402
     _fallback_plan,
     _render_uml_reason_evidence,
 )
+from server import app  # noqa: E402
+from tests.test_toolbox import SAMPLE_CLOZE_TEXT  # noqa: E402
 from agent.prompts import render_plan_prompt  # noqa: E402
 
 
@@ -160,12 +168,186 @@ def test_adjust_plan_v4_aware_combined():
     assert [s["module"] for s in out] == ["solve_lab"]
 
 
+FACADE_CLOZE_TEXT = """
+( 1 ) AbstractFacade {
+    public abstract void execute(String fileName);
+}
+
+class XMLFacade extends AbstractFacade {
+    public void execute(String fileName){
+        String str = ( 2 );
+        String strResult = ( 3 );
+        ( 4 );
+    }
+}
+""".strip()
+
+DIRTY_LAB_PLAN_STEPS = [
+    {"module": "solve_lab", "params": {"language": "java"}, "default_checked": True},
+    {"module": "run_code", "params": {}, "default_checked": True},
+    {"module": "present_deliverable", "params": {}, "default_checked": True},
+]
+
+
+def _assert_code_cloze_plan_only(steps: list) -> None:
+    modules = [s["module"] for s in steps]
+    assert modules == ["solve_code_cloze", "present_deliverable"]
+    assert "solve_lab" not in modules
+    assert "run_code" not in modules
+
+
+def test_adjust_plan_for_code_cloze_singleton():
+    metadata = {
+        "code_cloze": {"is_code_cloze": True, "blank_count": 3, "language_hint": "java"},
+        "question_type": "code_cloze",
+    }
+    out = adjust_plan_for_code_cloze(DIRTY_LAB_PLAN_STEPS, metadata=metadata)
+    _assert_code_cloze_plan_only(out)
+    assert out[0]["params"].get("language") == "java"
+
+
+def test_adjust_plan_for_code_cloze_facade():
+    from modules.code_cloze import detect_code_cloze
+
+    probe = detect_code_cloze(FACADE_CLOZE_TEXT)
+    assert probe.get("is_code_cloze") is True
+    metadata = {
+        "code_cloze": probe,
+        "question_type": "code_cloze",
+    }
+    out = adjust_plan_for_code_cloze(DIRTY_LAB_PLAN_STEPS, metadata=metadata)
+    _assert_code_cloze_plan_only(out)
+
+
+@patch("server.plan_from_report")
+def test_agent_plan_paste_singleton_overrides_dirty_llm_plan(mock_plan):
+    """BF47: stale question.type + pasted cloze text → cloze plan at API boundary."""
+    mock_plan.return_value = {
+        "steps": list(DIRTY_LAB_PLAN_STEPS),
+        "clarifications": [{"question": "需要运行代码吗？"}],
+        "plan_fingerprint": "dirty-fp",
+        "decision_log": [],
+        "prompt_version": "test",
+    }
+    client = app.test_client()
+    resp = client.post(
+        "/api/agent/plan",
+        json={
+            "api_key": "sk-test",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "report_text": "占位报告正文",
+            "assignment_text": SAMPLE_CLOZE_TEXT,
+            "question": {"type": "lab_report"},
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    _assert_code_cloze_plan_only(data["steps"])
+    mock_plan.assert_called_once()
+
+
+@patch("server.plan_from_report")
+def test_agent_plan_paste_facade_overrides_dirty_llm_plan(mock_plan):
+    mock_plan.return_value = {
+        "steps": list(DIRTY_LAB_PLAN_STEPS),
+        "clarifications": [],
+        "plan_fingerprint": "dirty-fp",
+        "decision_log": [],
+        "prompt_version": "test",
+    }
+    client = app.test_client()
+    resp = client.post(
+        "/api/agent/plan",
+        json={
+            "api_key": "sk-test",
+            "report_text": "占位",
+            "assignment_text": FACADE_CLOZE_TEXT,
+            "question": {"type": "lab_report"},
+        },
+    )
+    assert resp.status_code == 200
+    _assert_code_cloze_plan_only(resp.get_json()["steps"])
+
+
 def test_plan_from_report_requires_key():
     try:
         plan_from_report("x", settings={})
         assert False, "expected ValueError"
     except ValueError as e:
         assert "API Key" in str(e)
+
+
+def test_plan_from_report_decision_log_contains_source():
+    fake = {
+        "content": """
+{
+  "steps": [
+    {
+      "module": "solve_lab",
+      "params": {"language": "java"},
+      "reason": "需要编程",
+      "source": "llm",
+      "confidence": "high",
+      "default_checked": true
+    }
+  ],
+  "clarifications": []
+}
+""",
+        "reasoning_content": "",
+    }
+    with patch("llm_client.chat", return_value=fake):
+        plan = plan_from_report(
+            "三、实验步骤\n实现算法",
+            settings={"api_key": "sk-test", "provider": "deepseek", "model": "deepseek-chat"},
+            profile={"default_language": "java"},
+            metadata={},
+        )
+    log = plan.get("decision_log") or []
+    assert any(e.get("decision") == "plan_pipeline_stage" for e in log)
+    generated = next(e for e in log if e.get("decision") == "plan_generated")
+    assert generated.get("source") == "planner"
+
+
+def test_apply_question_type_overrides_code_cloze():
+    base_plan = {
+        "steps": list(DIRTY_LAB_PLAN_STEPS),
+        "clarifications": [{"question": "x"}],
+        "decision_log": [],
+        "plan_fingerprint": "fp-test",
+    }
+    out = apply_question_type_overrides(
+        base_plan,
+        metadata={"question_type": "code_cloze", "code_cloze": {"is_code_cloze": True, "blank_count": 2}},
+        question_type="code_cloze",
+    )
+    _assert_code_cloze_plan_only(out["steps"])
+    assert out["clarifications"] == []
+    assert any(e.get("decision") == "plan_override" for e in (out.get("decision_log") or []))
+
+
+def test_apply_question_type_overrides_mixed_assignment():
+    base_plan = {
+        "steps": [{"module": "solve_lab", "params": {}, "default_checked": True}],
+        "clarifications": [{"question": "x"}],
+        "decision_log": [],
+        "plan_fingerprint": "fp-test",
+    }
+    metadata = {
+        "mixed_assignment": True,
+        "assignment_questions": [
+            {"id": 1, "type": "theory", "title": "简答", "full_text": "说明操作系统"},
+            {"id": 2, "type": "code_cloze", "title": "填空", "full_text": "class A {(1)}"},
+        ],
+    }
+    out = apply_question_type_overrides(base_plan, metadata=metadata, question_type="mixed_assignment")
+    assert [s["module"] for s in out["steps"]] == ["solve_theory", "solve_code_cloze", "present_deliverable"]
+    assert out["clarifications"] == []
+    assert any(
+        e.get("decision") == "plan_override" and e.get("target") == "mixed_assignment"
+        for e in (out.get("decision_log") or [])
+    )
 
 
 def test_fallback_plan_lab():
@@ -205,6 +387,9 @@ def main():
     test_fingerprint_stable()
     test_render_plan_prompt()
     test_plan_from_report_requires_key()
+    test_plan_from_report_decision_log_contains_source()
+    test_apply_question_type_overrides_code_cloze()
+    test_apply_question_type_overrides_mixed_assignment()
     test_fallback_plan_lab()
     test_fallback_plan_uml_reason_lists_kinds()
     test_render_uml_reason_evidence_default_independent()

@@ -10,6 +10,8 @@ let mainWindow;
 let pythonProcess;
 let pythonPid = null;
 const PYTHON_PORT = 5199;
+let serverReady = false;
+let serverStartError = '';
 
 function killPythonTree(pid) {
   if (!pid) return;
@@ -58,6 +60,7 @@ function cleanupPython() {
     pythonPid = null;
   }
   pythonProcess = null;
+  serverReady = false;
   // Belt and suspenders: also kill anything left on the port
   killAllPythonOnPort(PYTHON_PORT);
 }
@@ -302,6 +305,10 @@ ipcMain.handle('open-external-url', async (event, url) => {
 
 // IPC: 获取服务状态
 ipcMain.handle('get-server-port', () => PYTHON_PORT);
+ipcMain.handle('get-server-status', () => ({
+  ready: serverReady,
+  error: serverStartError || null,
+}));
 
 // IPC: 读取文件内容（base64）
 ipcMain.handle('read-file-base64', async (event, filePath) => {
@@ -330,9 +337,13 @@ app.whenReady().then(async () => {
     await startPythonServer();
     await waitForServer();
     console.log('Python服务就绪');
+    serverReady = true;
+    serverStartError = '';
     mainWindow?.webContents.send('server-ready');
   } catch (err) {
     console.error('后端启动失败:', err);
+    serverReady = false;
+    serverStartError = (err && err.message) ? err.message : String(err);
     mainWindow?.webContents.send('server-error', err.message);
   }
 

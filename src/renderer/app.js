@@ -55,6 +55,7 @@ let agentDirtyModules = [];
 let agentFillSections = null;
 let agentAnswerTemplateText = '';
 let uploadedDocuments = [];
+let uploadInputMode = 'paste';
 let assignmentImageItems = [];
 let assignmentImageDragId = null;
 let agentDocLayout = null;
@@ -70,6 +71,7 @@ let agentAssignmentFromImages = false;
 let agentAssignmentBodyPrefix = '';
 let agentAssignmentPreviewConfirmed = false;
 let agentParseImageWarnings = [];
+let agentContextSnapshot = null;
 let _ocrOkCached = null;
 let agentTemplatePending = null;
 let agentTemplateConfirmed = false;
@@ -237,6 +239,8 @@ const FILL_MODE_OPTIONS = [
 
 const VERIFY_CHECK_LABELS = {
   schema_complete: '结构完整',
+  code_cloze_schema: '代码完形结构',
+  deliverable_ready: '答案交付物',
   no_placeholder: '无占位符',
   code_runs: '代码可运行',
   output_consistency: '输出一致性',
@@ -281,7 +285,9 @@ const VERIFY_WARN_IDS = new Set([
 
 const AGENT_MODULE_LABELS = {
   solve_lab: '生成实验报告内容',
+  solve_code_cloze: '代码完形填空',
   solve_theory: '理论题解答',
+  solve_short_answer: '解答简答题',
   run_code: '运行代码',
   fix_code: '修复代码',
   render_uml: '渲染图表',
@@ -513,6 +519,18 @@ async function init() {
     }, 2000);
   });
 
+  // 兜底：避免 server-ready 早于监听绑定导致前端一直“连接中”
+  try {
+    const status = await window.electronAPI.getServerStatus();
+    if (status?.ready) {
+      runServerReadyBootstrap();
+    } else if (status?.error) {
+      serverStartupFailed = true;
+      document.getElementById('loadingStatus').textContent = '后端启动失败: ' + status.error;
+      setServerStatus(false);
+    }
+  } catch (_) { /* optional */ }
+
   // UI 解锁：本地设置可先加载；后端 API 仅在后端就绪（IPC 或 health 轮询）后调用
   setTimeout(async () => {
     hideLoading();
@@ -530,9 +548,74 @@ async function init() {
   initAgentPlanWatchers();
   initRevisePanelUI();
   initDeliverableWorkspaceUI();
+  initUploadInputUI();
   renderDocumentList();
   switchSettingsPane(_activeSettingsPane);
   window.addEventListener('resize', updateDocumentListEmptyHint);
+}
+
+function initUploadInputUI() {
+  bindUploadPasteTextarea();
+  setUploadInputMode('paste');
+}
+
+function setUploadInputMode(mode) {
+  uploadInputMode = mode === 'file' ? 'file' : 'paste';
+  const uploadArea = document.getElementById('uploadArea');
+  const pastePanel = document.getElementById('uploadPastePanel');
+  const filePanel = document.getElementById('uploadFilePanel');
+  document.querySelectorAll('.upload-mode-tab').forEach((btn) => {
+    btn.classList.toggle('active', btn.getAttribute('data-mode') === uploadInputMode);
+  });
+  if (pastePanel) pastePanel.classList.toggle('is-hidden', uploadInputMode !== 'paste');
+  if (filePanel) filePanel.classList.toggle('is-hidden', uploadInputMode !== 'file');
+  if (uploadArea) {
+    uploadArea.classList.toggle('upload-mode-paste', uploadInputMode === 'paste');
+    uploadArea.classList.toggle('upload-mode-file', uploadInputMode === 'file');
+  }
+  if (uploadInputMode === 'paste') {
+    document.getElementById('uploadPasteText')?.focus();
+  }
+}
+
+function bindUploadPasteTextarea() {
+  const textarea = document.getElementById('uploadPasteText');
+  if (!textarea) return;
+  textarea.addEventListener('input', updateUploadPasteMeta);
+  textarea.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      confirmUploadPaste();
+    }
+  });
+  updateUploadPasteMeta();
+}
+
+function updateUploadPasteMeta() {
+  const meta = document.getElementById('uploadPasteMeta');
+  const textarea = document.getElementById('uploadPasteText');
+  if (!meta || !textarea) return;
+  const len = textarea.value.trim().length;
+  meta.textContent = len ? `约 ${len.toLocaleString()} 字 · Ctrl+Enter 快速添加` : 'Ctrl+Enter 快速添加';
+}
+
+function confirmUploadPaste() {
+  const textarea = document.getElementById('uploadPasteText');
+  if (addInlineTextDocument(textarea?.value || '', 'assignment')) {
+    showToast('已添加题目文字', 'success');
+    if (textarea) textarea.value = '';
+    updateUploadPasteMeta();
+  }
+}
+
+function focusUploadPaste() {
+  goToStep(1);
+  setUploadInputMode('paste');
+  const textarea = document.getElementById('uploadPasteText');
+  if (!textarea) return;
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  textarea.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'nearest' });
+  textarea.focus();
 }
 
 function initDeliverableWorkspaceUI() {
@@ -688,6 +771,45 @@ function onShowThoughtTraceChange() {
   const el = document.getElementById('showThoughtTraceSettings');
   persistSettingsPatch({ showThoughtTrace: el ? el.checked : false });
   updateThoughtSidebarVisibility();
+}
+
+function onAutoRemediateChange() {
+  const el = document.getElementById('autoRemediateSettings');
+  persistSettingsPatch({ autoRemediate: el ? el.checked : true });
+  onAutoRemediateMaxRoundsChange();
+  updateStep2ModeBanner();
+}
+
+function getAutoRemediateMaxRounds() {
+  const el = document.getElementById('autoRemediateMaxRoundsSettings');
+  const raw = el ? parseInt(el.value, 10) : NaN;
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(0, Math.min(5, raw));
+}
+
+function onAutoRemediateMaxRoundsChange() {
+  const rounds = getAutoRemediateMaxRounds();
+  persistSettingsPatch({ autoRemediateMaxRounds: rounds });
+  updateStep2ModeBanner();
+}
+
+function getMaxReplanRounds() {
+  const el = document.getElementById('maxReplanRoundsSettings');
+  const raw = el ? parseInt(el.value, 10) : NaN;
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(0, Math.min(5, raw));
+}
+
+function onMaxReplanRoundsChange() {
+  persistSettingsPatch({ maxReplanRounds: getMaxReplanRounds() });
+  updateStep2ModeBanner();
+}
+
+function resolveMaxReplanRoundsForRun() {
+  const settings = readSettings();
+  const raw = Number(settings.maxReplanRounds);
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(0, Math.min(5, raw));
 }
 
 function shouldShowThoughtSidebarShell() {
@@ -1054,6 +1176,72 @@ function refreshSectionStatusBadge(row, sec, chars) {
   badge.textContent = sectionStatusBadgeLabel(sec, chars);
 }
 
+function getCodeClozeParseInfo(questions, metadata) {
+  if (!questions?.length) return null;
+  if (metadata?.mixed_assignment && questions.length > 1) {
+    const clozeQs = questions.filter((q) => q.type === 'code_cloze');
+    const theoryCount = questions.filter((q) => q.type === 'theory').length;
+    const blankCount = clozeQs.reduce((sum, q) => {
+      const c = q.metadata?.code_cloze;
+      return sum + (c?.blank_count || 0);
+    }, 0);
+    return {
+      blankCount,
+      mixed: true,
+      segmentCount: questions.length,
+      theoryCount,
+      clozeCount: clozeQs.length,
+    };
+  }
+  const q = questions[0];
+  const cloze = q.metadata?.code_cloze || metadata?.code_cloze;
+  const isCloze = q.type === 'code_cloze' || cloze?.is_code_cloze;
+  if (!isCloze) return null;
+  const blankCount = cloze?.blank_count
+    ?? (Array.isArray(cloze?.blanks) ? cloze.blanks.length : 0);
+  return { blankCount: blankCount || 0 };
+}
+
+function codeClozeParseBadgeLabel(blankCount) {
+  return `代码填空 · 检测到 ${blankCount} 个空`;
+}
+
+function mixedAssignmentParseBadgeLabel(info) {
+  const parts = [];
+  if (info.theoryCount) parts.push(`简答 ${info.theoryCount}`);
+  if (info.clozeCount) parts.push(`填空 ${info.blankCount} 空`);
+  return parts.length
+    ? `混排卷 · ${parts.join(' + ')}`
+    : `混排卷 · ${info.segmentCount} 段`;
+}
+
+function formatCodeClozeParseBadgeText(questions, metadata) {
+  const info = getCodeClozeParseInfo(questions, metadata);
+  if (!info) return '';
+  if (info.mixed) return mixedAssignmentParseBadgeLabel(info);
+  if (info.blankCount < 1) return '';
+  return codeClozeParseBadgeLabel(info.blankCount);
+}
+
+function hideCodeClozeParseBadge() {
+  const badge = document.getElementById('codeClozeParseBadge');
+  if (badge) uiHide(badge);
+}
+
+function renderCodeClozeParseBadge(questions, metadata) {
+  const badge = document.getElementById('codeClozeParseBadge');
+  const textEl = document.getElementById('codeClozeParseBadgeText');
+  if (!badge || !textEl) return;
+  const label = formatCodeClozeParseBadgeText(questions, metadata);
+  if (!label) {
+    hideCodeClozeParseBadge();
+    return;
+  }
+  textEl.textContent = label;
+  uiShow(badge, 'flex');
+  if (window.Icons?.initDataIcons) Icons.initDataIcons(badge);
+}
+
 function updateQuestionsPanelSummary(questions) {
   const summary = document.getElementById('step2QuestionsSummaryText');
   const panel = document.getElementById('step2QuestionsPanel');
@@ -1064,7 +1252,15 @@ function updateQuestionsPanelSummary(questions) {
     if (panel) panel.open = false;
     return;
   }
-  if (questions[0]?.type === 'lab_report') {
+  const clozeInfo = getCodeClozeParseInfo(questions, parsedMetadata);
+  if (clozeInfo?.mixed) {
+    const parts = [];
+    if (clozeInfo.theoryCount) parts.push(`简答 ${clozeInfo.theoryCount} 道`);
+    if (clozeInfo.clozeCount) parts.push(`代码填空 ${clozeInfo.blankCount} 空`);
+    summary.textContent = parts.length ? `混排卷 · ${parts.join(' + ')}` : `混排卷 · ${clozeInfo.segmentCount} 段`;
+  } else if (clozeInfo) {
+    summary.textContent = codeClozeParseBadgeLabel(clozeInfo.blankCount);
+  } else if (questions[0]?.type === 'lab_report') {
     summary.textContent = '实验报告（1 份）';
   } else {
     summary.textContent = `检测到 ${count} 道题目`;
@@ -1653,8 +1849,9 @@ function goToStep(n) {
   document.querySelectorAll('.step-content').forEach(el => el.classList.remove('active'));
   document.getElementById(`step-${n}`).classList.add('active');
   updateStepBar(n);
-  if (n === 2 && parsedQuestions.length > 0) {
-    showModeSwitchBar();
+  if (n === 2) {
+    updateStep2ModeBanner();
+    if (parsedQuestions.length > 0) showModeSwitchBar();
   }
 }
 
@@ -1723,8 +1920,8 @@ function updateDocumentListEmptyHint() {
   if (!emptyHint) return;
   const narrow = window.matchMedia('(max-width: 959px)').matches;
   emptyHint.textContent = narrow
-    ? '拖拽文件到上传区，或点击「+ 添加」'
-    : '拖拽文件到左侧上传区，或点击「+ 添加」';
+    ? '粘贴题目文字，或点击「+ 添加」上传文件'
+    : '在左侧粘贴文字，或切换到「上传文件」添加 docx / pdf';
 }
 
 function renderDocumentList() {
@@ -1733,10 +1930,15 @@ function renderDocumentList() {
   const parseBtn = document.getElementById('parseDocumentsBtn');
   const uploadHint = document.getElementById('uploadAreaHint');
   const uploadArea = document.getElementById('uploadArea');
+  const listCount = document.getElementById('documentListCount');
   if (!list) return;
 
   list.querySelectorAll('tr.document-list-item').forEach((el) => el.remove());
   if (empty) empty.style.display = uploadedDocuments.length ? 'none' : 'table-row';
+  if (listCount) {
+    listCount.textContent = String(uploadedDocuments.length);
+    listCount.classList.toggle('is-hidden', uploadedDocuments.length === 0);
+  }
   if (parseBtn) parseBtn.disabled = uploadedDocuments.length === 0 && assignmentImageItems.length === 0;
   updateDocumentListEmptyHint();
 
@@ -1748,7 +1950,16 @@ function renderDocumentList() {
   if (uploadHint) {
     uploadHint.textContent = uploadedDocuments.length
       ? '拖拽或点击添加更多文档（已添加 ' + uploadedDocuments.length + ' 个）'
-      : '支持 .doc / .docx / .pdf，或直接粘贴超星等平台上的题目文字';
+      : '支持 .doc / .docx / .pdf；仅题目文字请用「粘贴题目」';
+  }
+
+  const onlyInline = uploadedDocuments.length > 0
+    && uploadedDocuments.every((d) => d.isInline);
+  const parseLead = document.querySelector('.upload-paste-lead');
+  if (parseLead && uploadInputMode === 'paste') {
+    parseLead.innerHTML = onlyInline
+      ? '题目文字已添加，点右侧「解析并继续」即可，<strong>无需再上传文件</strong>'
+      : '从超星、慕课等平台复制题目文字，粘贴到下方即可开始，<strong>无需上传文件</strong>';
   }
 
   const hasParsed = uploadedDocuments.some((d) => d.resolvedRole);
@@ -1873,43 +2084,7 @@ function addInlineTextDocument(text, role = 'assignment') {
 }
 
 function openPasteAssignmentModal() {
-  const modal = document.getElementById('pasteAssignmentModal');
-  const textarea = document.getElementById('pasteAssignmentText');
-  const roleSelect = document.getElementById('pasteAssignmentRole');
-  const metaEl = document.getElementById('pasteAssignmentMeta');
-  const confirmBtn = document.getElementById('pasteAssignmentConfirm');
-  const cancelBtn = document.getElementById('pasteAssignmentCancel');
-  if (!modal || !textarea) return;
-
-  textarea.value = '';
-  if (roleSelect) roleSelect.value = 'assignment';
-  if (metaEl) metaEl.textContent = '';
-  uiShow(modal, 'flex');
-  textarea.focus();
-
-  function updateMeta() {
-    if (!metaEl) return;
-    const len = textarea.value.trim().length;
-    metaEl.textContent = len ? `约 ${len.toLocaleString()} 字` : '';
-  }
-
-  textarea.oninput = updateMeta;
-
-  function cleanup() {
-    uiHide(modal);
-    textarea.oninput = null;
-    confirmBtn.onclick = null;
-    cancelBtn.onclick = null;
-  }
-
-  confirmBtn.onclick = () => {
-    const role = roleSelect?.value || 'assignment';
-    if (addInlineTextDocument(textarea.value, role)) {
-      showToast('已添加粘贴内容到文档清单', 'success');
-      cleanup();
-    }
-  };
-  cancelBtn.onclick = cleanup;
+  focusUploadPaste();
 }
 
 function addUploadedDocument(filePath) {
@@ -1968,9 +2143,16 @@ function renderDocumentSummaryBar() {
     return `<span class="doc-summary-chip" style="background:${color}20;color:${color}">${label} ×${count}</span>`;
   });
 
+  const clozeInfo = getCodeClozeParseInfo(parsedQuestions, parsedMetadata);
+  const clozeLabel = formatCodeClozeParseBadgeText(parsedQuestions, parsedMetadata);
+  const clozeChip = clozeLabel
+    ? `<span class="doc-summary-chip doc-summary-chip-cloze">${escapeHtml(clozeLabel)}</span>`
+    : '';
+
   bar.innerHTML = `
     <span class="doc-summary-label">已解析 ${uploadedDocuments.length} 个文档：</span>
     ${parts.join(' ')}
+    ${clozeChip}
     <span class="doc-summary-hint">角色可手动调整后重新解析</span>
   `;
 
@@ -2443,7 +2625,7 @@ function confirmSplitAndContinue() {
 
 async function buildDocumentsPayload() {
   if (!uploadedDocuments.length && !assignmentImageItems.length) {
-    throw new Error('请先添加文档或题目图片');
+    throw new Error('请先粘贴题目文字、添加文档或题目图片');
   }
   const documents = [];
   for (const doc of uploadedDocuments) {
@@ -2620,6 +2802,7 @@ function applyParseResponse(resp, fileName) {
 
   renderSplitPreview(resp);
   renderAssignmentPreview(resp);
+  renderCodeClozeParseBadge(parsedQuestions, meta);
 
   // Check runtime availability (fire-and-forget, non-blocking)
   checkAndPromptRuntimes().catch(() => {});
@@ -3359,7 +3542,7 @@ async function refreshRuntimeStatus() {
 async function parseAllDocuments(options = {}) {
   const { stayOnStep, quiet } = options;
   if (!uploadedDocuments.length && !assignmentImageItems.length) {
-    showToast('请先添加文档或题目图片', 'error');
+    showToast('请先粘贴题目文字，或添加文档/题目图片', 'error');
     return;
   }
 
@@ -3382,7 +3565,20 @@ async function parseAllDocuments(options = {}) {
       return;
     }
 
-    const typeLabel = parsedQuestions[0].type === 'lab_report' ? '实验报告' : `${parsedQuestions.length} 个题目`;
+    let typeLabel;
+    const clozeInfo = getCodeClozeParseInfo(parsedQuestions, parsedMetadata);
+    if (clozeInfo?.mixed) {
+      const parts = [];
+      if (clozeInfo.theoryCount) parts.push(`简答 ${clozeInfo.theoryCount}`);
+      if (clozeInfo.clozeCount) parts.push(`填空 ${clozeInfo.blankCount} 空`);
+      typeLabel = `混排卷（${parts.join(' + ')}）`;
+    } else if (clozeInfo) {
+      typeLabel = `代码填空（${clozeInfo.blankCount} 空）`;
+    } else if (parsedQuestions[0].type === 'lab_report') {
+      typeLabel = '实验报告';
+    } else {
+      typeLabel = `${parsedQuestions.length} 个题目`;
+    }
     if (!quiet) showToast(`已解析：${typeLabel}`, 'success');
 
     if (resp.layout === 'combined') {
@@ -3520,6 +3716,7 @@ function clearAnswerTemplate() {
 function handleDragOver(e) {
   e.preventDefault();
   e.stopPropagation();
+  if (uploadInputMode !== 'file') setUploadInputMode('file');
   document.getElementById('uploadArea').classList.add('dragover');
 }
 
@@ -3532,6 +3729,7 @@ function handleDragLeave(e) {
 function handleDrop(e) {
   e.preventDefault();
   document.getElementById('uploadArea').classList.remove('dragover');
+  if (uploadInputMode !== 'file') setUploadInputMode('file');
   const files = e.dataTransfer.files;
   if (!files.length) return;
   let added = 0;
@@ -3699,8 +3897,10 @@ function renderQuestions(questions) {
   questions.forEach((q, i) => {
     const typeMap = {
       'code': { label: '编程题', cls: 'badge-code' },
+      'code_cloze': { label: '代码填空', cls: 'badge-code-cloze' },
       'theory': { label: '理论题', cls: 'badge-theory' },
       'analysis': { label: '分析题', cls: 'badge-analysis' },
+      'lab_report': { label: '实验报告', cls: 'badge-analysis' },
     };
     const type = typeMap[q.type] || { label: '其他', cls: 'badge-theory' };
 
@@ -3913,6 +4113,45 @@ function formatDiagramToolOutput(data) {
       lines.push(`建议: ${val.suggested_actions.join(' → ')}`);
     }
   }
+  return lines.join('\n');
+}
+
+function formatSolveToolOutput(payload) {
+  if (!payload) return '';
+  const parsed = payload.parsed || payload;
+  const type = payload.type || parsed.type;
+  if (type !== 'code_cloze') {
+    return JSON.stringify(payload, null, 2);
+  }
+  const blanks = parsed.blanks || payload.blanks || {};
+  const entries = Object.entries(blanks)
+    .map(([k, v]) => {
+      const n = Number(k);
+      if (v && typeof v === 'object') {
+        return {
+          n: Number.isFinite(n) ? n : k,
+          answer: String(v.answer || '').trim(),
+          brief: String(v.brief || '').trim(),
+        };
+      }
+      return { n: Number.isFinite(n) ? n : k, answer: String(v || '').trim(), brief: '' };
+    })
+    .sort((a, b) => (Number(a.n) || 0) - (Number(b.n) || 0));
+  const lines = [
+    '【代码完形填空】',
+    `检测到 ${entries.length} 个空号：`,
+    '',
+  ];
+  for (const e of entries) {
+    lines.push(`  ${e.n}. ${e.answer}${e.brief ? `  // ${e.brief}` : ''}`);
+  }
+  const note = parsed.pattern_note || payload.pattern_note;
+  if (note) lines.push('', `模式说明：${note}`);
+  const code = parsed.completed_code || payload.completed_code;
+  if (code) {
+    lines.push('', '--- 完整代码预览 ---', code);
+  }
+  lines.push('', '提示：切到引导模式执行计划可在 Step3 使用空号工作区。');
   return lines.join('\n');
 }
 
@@ -4466,6 +4705,8 @@ async function executeTool(toolId) {
       state.output = payload;
       if (toolId === 'uml') {
         state.outputText = formatDiagramToolOutput(state.output);
+      } else if (toolId === 'solve') {
+        state.outputText = formatSolveToolOutput(state.output);
       } else {
         state.outputText = JSON.stringify(payload, null, 2);
       }
@@ -4729,6 +4970,7 @@ function resetAgentPlanState(options = {}) {
     agentAssignmentPreviewConfirmed = false;
     agentParseImageWarnings = [];
     hideAssignmentPreview();
+    hideCodeClozeParseBadge();
     const ocrBanner = document.getElementById('parseOcrBanner');
     if (ocrBanner) uiHide(ocrBanner);
     agentAwaitingSplitConfirm = false;
@@ -4753,6 +4995,7 @@ function resetAgentPlanState(options = {}) {
   agentPlanFeedback = null;
   agentReplanNotified = false;
   agentDecisionLog = [];
+  agentContextSnapshot = null;
   clearAgentThoughtLog();
   agentRunFinished = false;
   agentSseClosingGracefully = false;
@@ -4850,7 +5093,7 @@ function updateExportActionBarVisibility() {
   if (!bar) return;
   if (isContentOnlyOutputMode()) {
     if (hint) {
-      hint.innerHTML = `${ico('lightbulb', 'icon-sm')} 答案已生成，请从上方工作区复制分节内容；也可在代码面板试跑`;
+      hint.innerHTML = `${ico('lightbulb', 'icon-sm')} 答案已生成：中间复制分节正文，右侧预览区一键复制代码/图表`;
     }
     if (advanced) uiShow(advanced);
   } else {
@@ -4904,10 +5147,21 @@ function getSolveQualityTier() {
   return ['fast', 'standard', 'thorough'].includes(val) ? val : 'standard';
 }
 
+function onAutoFastTierSettingsChange() {
+  const el = document.getElementById('autoFastTierForLightQuestionsSettings');
+  persistSettingsPatch({ autoFastTierForLightQuestions: el ? el.checked : true });
+  updateStep2ModeBanner();
+}
+
+function onParallelModuleStepsChange() {
+  const el = document.getElementById('enableParallelModuleStepsSettings');
+  persistSettingsPatch({ enableParallelModuleSteps: el ? el.checked : true });
+}
+
 function onSolveQualityTierChange() {
   const tier = getSolveQualityTier();
   syncSolveQualityTierUI(tier);
-  persistSettingsPatch({ solveQualityTier: tier });
+  persistSettingsPatch({ solveQualityTier: tier, solveQualityTierExplicit: true });
   const hints = {
     fast: '极速档位：跳过内化验证，约 2 次 LLM',
     standard: '标准档位：默认内化验证与修复轮次',
@@ -4924,13 +5178,76 @@ function syncSolveQualityTierUI(tier) {
     const card = el.closest('.run-mode-card');
     if (card) card.classList.toggle('active', selected);
   });
+  updateStep2ModeBanner();
 }
 
 function resolveAutoRemediateForRun(runMode) {
-  const saved = JSON.parse(localStorage.getItem('settings') || '{}');
-  if (saved.autoRemediate === true) return true;
-  if (saved.autoRemediate === false) return false;
-  return runMode === 'deep';
+  void runMode;
+  const settings = readSettings();
+  return settings.autoRemediate !== false;
+}
+
+function resolveAutoRemediateMaxRoundsForRun() {
+  const settings = readSettings();
+  const raw = Number(settings.autoRemediateMaxRounds);
+  if (!Number.isFinite(raw)) return 1;
+  return Math.max(0, Math.min(5, raw));
+}
+
+const SOLVE_QUALITY_TIER_LABELS = {
+  fast: '极速',
+  standard: '标准',
+  thorough: '稳妥',
+};
+
+function updateStep2ModeBanner() {
+  const el = document.getElementById('step2ModeBanner');
+  if (!el) return;
+  const runMode = getRunMode();
+  const tier = getSolveQualityTier();
+  const tierLabel = SOLVE_QUALITY_TIER_LABELS[tier] || tier;
+  const autoFix = resolveAutoRemediateForRun(runMode);
+  const autoFixRounds = resolveAutoRemediateMaxRoundsForRun();
+  const replanRounds = resolveMaxReplanRoundsForRun();
+
+  const settings = readSettings();
+  const autoFast = settings.autoFastTierForLightQuestions !== false;
+  const tierLocked = settings.solveQualityTierExplicit === true;
+
+  if (runMode === 'deep') {
+    el.className = 'step2-mode-banner step2-mode-banner--deep';
+    el.innerHTML =
+      `${ico('brain', 'icon-sm')}<div class="step2-mode-banner-text">` +
+      `<strong>深度模式</strong> · 质量档位 ${tierLabel} · 执行前 AI 审稿 + V4 流水线 + 内化验证` +
+      `${autoFix ? ` · 校验失败自动修复(${autoFixRounds}轮)` : ''}` +
+      `${replanRounds ? ` · 失败重规划≤${replanRounds}轮` : ' · 重规划已关闭'}` +
+      `<span class="step2-mode-banner-sub">适合长报告与多约束；比标准多约 2～3 次 LLM</span></div>`;
+    return;
+  }
+  if (runMode === 'react') {
+    el.className = 'step2-mode-banner step2-mode-banner--react';
+    el.innerHTML =
+      `${ico('sparkles', 'icon-sm')}<div class="step2-mode-banner-text">` +
+      `<strong>ReAct 实验模式</strong> · V4 优先解题 + AI 自主补跑 UML / 交付` +
+      `<span class="step2-mode-banner-sub">延迟与费用最高；适合计划难覆盖的收尾步骤</span></div>`;
+    return;
+  }
+
+  const tierHint = tier === 'fast'
+    ? '极速档位：跳过部分验证，编程题建议改标准或稳妥'
+    : tier === 'thorough'
+      ? '稳妥档位：多轮修复，质量最高'
+      : '标准档位：内化验证 + 适量修复';
+  const autoFastHint = autoFast && !tierLocked
+    ? ' · 轻量题型将自动用极速档位（可在设置关闭）'
+    : '';
+  el.className = 'step2-mode-banner step2-mode-banner--standard';
+  el.innerHTML =
+    `${ico('check-circle', 'icon-sm')}<div class="step2-mode-banner-text">` +
+    `<strong>标准模式</strong> · ${tierLabel}档位 · V4 分阶段解题 · 沙箱试跑代码 · 执行后规则校验` +
+    `${autoFix ? ` · <span class="step2-mode-banner-accent">校验未通过将自动修复 ${autoFixRounds} 轮</span>` : ' · 自动修复已关闭（可在设置开启）'}` +
+    `${replanRounds ? ` · 失败重规划≤${replanRounds}轮` : ' · 重规划已关闭'}` +
+    `<span class="step2-mode-banner-sub">${tierHint}${autoFastHint} · 编程题不满意可改稳妥或切深度</span></div>`;
 }
 
 function syncRunModeUI(runMode) {
@@ -4945,6 +5262,7 @@ function syncRunModeUI(runMode) {
     const card = el.closest('.run-mode-card');
     if (card) card.classList.toggle('active', selected);
   });
+  updateStep2ModeBanner();
 }
 
 function collectSolveOptions(settings) {
@@ -4974,6 +5292,9 @@ function getAgentApiSettings() {
     sections_config: collectSectionsConfigForApi(),
     user_constraints: getUserConstraints(),
     solveQualityTier: settings.solveQualityTier || getSolveQualityTier(),
+    solveQualityTierExplicit: settings.solveQualityTierExplicit === true,
+    autoFastTierForLightQuestions: settings.autoFastTierForLightQuestions !== false,
+    enableParallelModuleSteps: settings.enableParallelModuleSteps !== false,
     provenance_custom_label: getProvenanceCustomLabel() || undefined,
   };
 }
@@ -5031,6 +5352,16 @@ async function postAgentRunWithDocRetry(runPayload) {
   try {
     return await apiPost('/api/agent/run', runPayload);
   } catch (err) {
+    if (err.stale_plan === true && err.plan_fingerprint && !runPayload.__stale_plan_retried) {
+      const retryPayload = {
+        ...runPayload,
+        plan_fingerprint: err.plan_fingerprint,
+        __stale_plan_retried: true,
+      };
+      delete retryPayload.__stale_plan_retried;
+      agentPlanFingerprint = err.plan_fingerprint || agentPlanFingerprint;
+      return apiPost('/api/agent/run', retryPayload);
+    }
     if (!err.stale_documents) throw err;
     const retryPayload = { ...runPayload };
     delete retryPayload.document_ids;
@@ -5093,6 +5424,7 @@ async function generateAgentPlan() {
     agentPlanFingerprint = resp.plan_fingerprint || '';
     agentUnderstand = resp.understand || null;
     agentDocumentIds = resp.document_ids || [];
+    agentContextSnapshot = resp.agent_context_snapshot || null;
     agentClarifications = resp.clarifications || [];
     agentSplitIdx = resp.split_idx ?? null;
     agentPlanStale = false;
@@ -5388,16 +5720,20 @@ async function executeAgentPlan() {
     const resp = await postAgentRunWithDocRetry({
       ...getAgentApiSettings(),
       document_ids: agentDocumentIds,
+      agent_context_snapshot: agentContextSnapshot || undefined,
       steps,
       plan_fingerprint: fingerprint,
       output_mode: getOutputMode(),
       auto_remediate: resolveAutoRemediateForRun(runMode),
+      auto_remediate_max_rounds: resolveAutoRemediateMaxRoundsForRun(),
+      max_replan_rounds: resolveMaxReplanRoundsForRun(),
       sections_config: collectSectionsConfigForApi(),
       split_idx: agentSplitIdx,
       format_spec: agentFormatSpec || undefined,
       understand: agentUnderstand,
       fallback_on_failure: true,
       ...getSectionContextPayload(),
+      assignment_text: agentAssignmentText || undefined,
       code_language: settings.codeLanguage,
     });
 
@@ -5583,6 +5919,11 @@ function handleAgentSSEEvent(data, ctx) {
   const type = data.type;
 
   if (type === 'progress') {
+    if (data.status === 'running' && data.module === 'solve_code_cloze') {
+      const label = AGENT_MODULE_LABELS.solve_code_cloze || 'solve_code_cloze';
+      appendAgentThought(label, data.detail || '正在分析填空…');
+      recordAgentThought({ type: 'progress', phase: label, text: data.detail || '执行中…', status: 'running' });
+    }
     if (isAutonomousRunMode()) return;
     const mod = data.module || '';
     const el = document.getElementById(`agent-step-${mod}`);
@@ -5636,6 +5977,13 @@ function handleAgentSSEEvent(data, ctx) {
     }
     if (data.status === 'done' || data.status === 'degraded' || data.status === 'failed' || data.status === 'skipped') {
       ctx.bumpDone();
+    }
+    if (data.status === 'done' && data.deliverable) {
+      currentDeliverable = data.deliverable;
+      renderDeliverableWorkspace(data.deliverable);
+      const titleEl = document.getElementById('step3Title');
+      if (titleEl) setHeadingIcon(titleEl, 'clipboard-list', '答案工作区');
+      updateStep3CompletionActions();
     }
     return;
   }
@@ -5694,15 +6042,16 @@ function handleAgentSSEEvent(data, ctx) {
       text = `${phaseLabel}：${detail}`;
     }
     const mod = data.module || 'solve_lab';
+    const modLabel = AGENT_MODULE_LABELS[mod] || mod;
     if (!isAutonomousRunMode()) {
       const detailEl = document.getElementById(`agent-detail-${mod}`);
       if (detailEl) detailEl.textContent = text;
     }
     const progressLabel = document.getElementById('agentProgressLabel');
     if (progressLabel && isAutonomousRunMode()) {
-      progressLabel.textContent = `solve_lab · ${text}`;
+      progressLabel.textContent = `${modLabel} · ${text}`;
     }
-    appendAgentThought('V4 子阶段', text);
+    appendAgentThought(`${modLabel} · V4`, text);
     recordAgentThought({ type: 'pipeline_phase', phase: phaseLabel, text, status });
     return;
   }
@@ -5788,7 +6137,15 @@ function handleAgentSSEEvent(data, ctx) {
 
   if (type === 'verification') {
     agentVerificationReport = data;
-    renderVerificationPanel(data);
+    // 执行中不展示校验失败态，避免在答案工作区就绪前误导用户
+    if (!agentExecutionMode) {
+      renderVerificationPanel(data);
+      if (data.remediated) {
+        showToast('校验未通过，已自动修复并重验…', 'info');
+      } else if (data.passed === false && !data.remediated) {
+        showToast('校验未通过，请查看下方「校验清单」或修订答案', 'warning');
+      }
+    }
     return;
   }
 
@@ -6112,6 +6469,7 @@ async function runAgentPartialRerun(moduleIds) {
     const resp = await postAgentRunWithDocRetry({
       ...getAgentApiSettings(),
       document_ids: agentDocumentIds,
+      agent_context_snapshot: agentContextSnapshot || undefined,
       steps,
       plan_fingerprint: '',
       sections_config: collectSectionsConfigForApi(),
@@ -6198,7 +6556,17 @@ async function requestAgentRevise(forcedScope, options = {}) {
 async function applyAgentRunDone(event) {
   const settings = collectSolveOptions(readSettings());
   const mr = event.module_results || {};
-  let solveData = mr.solve_lab?.data || mr.solve_theory?.data;
+  const serverDeliverable = event.deliverable
+    || mr.present_deliverable?.data?.deliverable;
+  const isMixedRun = serverDeliverable?.type === 'mixed_assignment'
+    || parsedMetadata?.mixed_assignment;
+
+  let solveData = null;
+  if (!isMixedRun) {
+    solveData = (mr.solve_code_cloze?.ok && mr.solve_code_cloze.data)
+      ? mr.solve_code_cloze.data
+      : (mr.solve_lab?.data || mr.solve_short_answer?.data || mr.solve_theory?.data);
+  }
 
   if (solveData && mr.solve_lab?.data) {
     const apiSettings = getAgentApiSettings();
@@ -6223,11 +6591,11 @@ async function applyAgentRunDone(event) {
 
   agentModuleResults = mr;
 
-  if (solveData) {
+  if (solveData && !isMixedRun) {
     const q = parsedQuestions[0] || { type: 'lab_report' };
     solvedAnswers = [{
       ...q,
-      type: q.type || 'lab_report',
+      type: q.type || solveData.type || (solveData.parsed || {}).type || 'lab_report',
       answer: solveData.answer || solveData.result_description || '',
       code: solveData.code || '',
       code_files: solveData.code_files || [],
@@ -6250,9 +6618,14 @@ async function applyAgentRunDone(event) {
     lastAgentRunId = event.run_id;
   }
 
-  currentDeliverable = event.deliverable
-    || mr.present_deliverable?.data?.deliverable
+  currentDeliverable = serverDeliverable
     || buildDeliverableFromSolveData(solveData, mr);
+  if (currentDeliverable?.type === 'mixed_assignment') {
+    window._mixedDeliverableTab = String(
+      currentDeliverable.mixed_parts?.[0]?.segment_id ?? 0,
+    );
+    window._mixedClozeBlankTab = null;
+  }
   if (currentDeliverable) {
     renderDeliverableWorkspace(currentDeliverable);
   }
@@ -6319,6 +6692,8 @@ function finishAgentRunUI(success) {
     updateAgentVersionUI();
   } else if (!success) {
     showToast('执行未完全成功，可返回修改计划后重试', 'warning');
+  } else if (agentVerificationReport && agentVerificationReport.passed === false) {
+    showToast('答案已生成，但校验仍有未通过项 — 建议展开「校验清单」修订', 'warning');
   }
 }
 
@@ -6343,11 +6718,39 @@ function buildDeliverableFromSolveData(solveData, moduleResults) {
   if (!solveData) return null;
   const parsed = solveData.parsed || {};
   const mr = moduleResults || {};
+  const solveType = solveData.type || parsed.type || '';
+  if (solveType === 'short_answer' || solveType === 'theory') {
+    const constraints = getUserConstraints();
+    return {
+      id: `dlv_local_${Date.now()}`,
+      type: 'theory',
+      created_at: new Date().toISOString(),
+      sections: {
+        answer: solveData.answer || parsed.answer || '',
+        notes: parsed.notes || solveData.notes || '',
+      },
+      code: { files: [], language: '', main_file: '' },
+      diagrams: [],
+      execution: {
+        validation_status: 'not_requested',
+        validation_note: '简答题无需代码验证',
+      },
+      constraints_applied: constraints,
+      provenance: {
+        ai_assisted: true,
+        generated_at: new Date().toISOString(),
+      },
+      quality: {},
+    };
+  }
+  const isCodeCloze = solveType === 'code_cloze';
   const codeFiles = solveData.code_files || parsed.code_files || [];
   const files = codeFiles.length
     ? codeFiles.map((f) => ({ name: f.name || f.filename || 'main', code: f.code || f.content || '' }))
     : (solveData.code || parsed.code)
       ? [{ name: solveData.main_file || parsed.main_file || 'main.py', code: solveData.code || parsed.code }]
+      : (parsed.completed_code || '').trim()
+        ? [{ name: solveData.main_file || parsed.main_file || 'main.java', code: parsed.completed_code }]
       : [];
   const umlImages = mr.render_uml?.data?.images_b64 || [];
   const rawDiagrams = parsed.diagrams || solveData.diagrams || [];
@@ -6401,6 +6804,7 @@ function buildDeliverableFromSolveData(solveData, moduleResults) {
 
   return {
     id: `dlv_local_${Date.now()}`,
+    type: isCodeCloze ? 'code_cloze' : 'lab_report',
     created_at: new Date().toISOString(),
     sections: {
       steps_analysis: parsed.steps_analysis || '',
@@ -6431,6 +6835,19 @@ function buildDeliverableFromSolveData(solveData, moduleResults) {
         : {}),
     },
     quality: {},
+    ...(isCodeCloze
+      ? (() => {
+        const refBlanks = getCodeClozeReferenceBlanks({});
+        return {
+          code_cloze: {
+            blanks: parsed.blanks || {},
+            completed_code: parsed.completed_code || '',
+            pattern_note: parsed.pattern_note || '',
+            ...(Object.keys(refBlanks).length ? { reference_blanks: refBlanks } : {}),
+          },
+        };
+      })()
+      : {}),
   };
 }
 
@@ -6458,9 +6875,187 @@ function deliverableSectionCharCount(dlv, tabId) {
 }
 
 function normalizeDeliverableTextTab(tabId, dlv) {
+  if (isCodeClozeDeliverable(dlv)) {
+    const blanks = getCodeClozeBlankEntries(dlv);
+    if (!blanks.length) return 'blank:1';
+    const cur = String(tabId || '');
+    if (cur.startsWith('blank:')) {
+      const n = Number(cur.slice(6));
+      if (blanks.some((b) => b.n === n)) return cur;
+    }
+    return `blank:${blanks[0].n}`;
+  }
   if (DELIVERABLE_TEXT_SECTIONS.some((t) => t.id === tabId)) return tabId;
   const withContent = DELIVERABLE_TEXT_SECTIONS.find((t) => deliverableSectionHasContent(dlv, t.id));
   return withContent?.id || 'steps_analysis';
+}
+
+function isMixedAssignmentDeliverable(dlv) {
+  return dlv?.type === 'mixed_assignment'
+    || (Array.isArray(dlv?.mixed_parts) && dlv.mixed_parts.length > 1);
+}
+
+function isCodeClozeDeliverable(dlv) {
+  if (isMixedAssignmentDeliverable(dlv)) return false;
+  return (dlv?.type === 'code_cloze')
+    || Boolean(dlv?.code_cloze?.blanks)
+    || Boolean(dlv?.code_cloze?.completed_code);
+}
+
+function getCodeClozeBlankEntries(dlv) {
+  const blanks = dlv?.code_cloze?.blanks || {};
+  if (!blanks || typeof blanks !== 'object') return [];
+  return Object.entries(blanks)
+    .map(([k, v]) => {
+      const n = Number(k);
+      if (!Number.isFinite(n)) return null;
+      if (v && typeof v === 'object') {
+        return {
+          n,
+          answer: String(v.answer || '').trim(),
+          brief: String(v.brief || '').trim(),
+        };
+      }
+      return { n, answer: String(v || '').trim(), brief: '' };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.n - b.n);
+}
+
+function getCodeClozeCompletedCode(dlv) {
+  const code = String(dlv?.code_cloze?.completed_code || '').trim();
+  if (code) return code;
+  const files = dlv?.code?.files || [];
+  if (files.length === 1) return String(files[0]?.code || '');
+  if (files.length > 1) return files.map((f) => String(f.code || '')).join('\n\n');
+  return '';
+}
+
+function getCodeClozePatternNote(dlv) {
+  return String(dlv?.code_cloze?.pattern_note || '').trim();
+}
+
+function normalizeClozeAnswer(s) {
+  return String(s || '').trim().replace(/\s+/g, ' ');
+}
+
+function matchClozeAnswer(user, primary, answerAlt) {
+  const normUser = normalizeClozeAnswer(user);
+  if (!normUser) return false;
+  const candidates = [primary].concat(answerAlt || []);
+  return candidates.some((c) => c && normalizeClozeAnswer(c) === normUser);
+}
+
+function normalizeReferenceBlanksMap(raw) {
+  const out = {};
+  if (!raw || typeof raw !== 'object') return out;
+  if (Array.isArray(raw)) {
+    raw.forEach((item) => {
+      if (!item || typeof item !== 'object' || item.n == null) return;
+      const key = String(item.n).trim();
+      if (!key) return;
+      out[key] = {
+        answer: String(item.answer || '').trim(),
+        answer_alt: (item.answer_alt || []).map((a) => String(a).trim()).filter(Boolean),
+        brief: String(item.brief || item.explanation || '').trim(),
+      };
+    });
+    return out;
+  }
+  Object.entries(raw).forEach(([k, v]) => {
+    const key = String(k).trim();
+    if (!key) return;
+    if (v && typeof v === 'object') {
+      out[key] = {
+        answer: String(v.answer || '').trim(),
+        answer_alt: (v.answer_alt || []).map((a) => String(a).trim()).filter(Boolean),
+        brief: String(v.brief || v.explanation || '').trim(),
+      };
+    } else {
+      out[key] = { answer: String(v || '').trim(), answer_alt: [], brief: '' };
+    }
+  });
+  return out;
+}
+
+function getCodeClozeReferenceBlanks(dlv, segmentId) {
+  if (segmentId != null && Array.isArray(dlv?.mixed_parts)) {
+    const part = dlv.mixed_parts.find((p) => String(p.segment_id) === String(segmentId));
+    const fromPart = part?.code_cloze?.reference_blanks;
+    if (fromPart && Object.keys(fromPart).length) {
+      return normalizeReferenceBlanksMap(fromPart);
+    }
+  }
+  const fromDlv = dlv?.code_cloze?.reference_blanks;
+  if (fromDlv && typeof fromDlv === 'object' && Object.keys(fromDlv).length) {
+    return normalizeReferenceBlanksMap(fromDlv);
+  }
+  const questions = parsedQuestions || [];
+  const q = segmentId != null
+    ? questions.find((item) => String(item.id) === String(segmentId))
+    : questions.find((item) => item.type === 'code_cloze') || questions[0];
+  const meta = q?.metadata || parsedMetadata || {};
+  const raw = meta.reference_blanks || meta.code_cloze?.reference_blanks;
+  return normalizeReferenceBlanksMap(raw);
+}
+
+function getActiveMixedDeliverablePart(dlv) {
+  const parts = Array.isArray(dlv?.mixed_parts) ? dlv.mixed_parts : [];
+  if (!parts.length) return null;
+  const activeId = window._mixedDeliverableTab;
+  return parts.find((p) => String(p.segment_id) === String(activeId)) || parts[0];
+}
+
+function buildCodeClozeReferenceCompareHtml(aiBlanks, refBlanks) {
+  const refKeys = Object.keys(refBlanks || {});
+  if (!refKeys.length) return '';
+  const rows = aiBlanks.map((b) => {
+    const ref = refBlanks[String(b.n)];
+    if (!ref || !ref.answer) {
+      return `<tr class="code-cloze-ref-row ref-skip">
+        <td>空 ${b.n}</td>
+        <td><code class="code-cloze-ref-code">${escapeHtml(b.answer || '—')}</code></td>
+        <td class="code-cloze-ref-muted">—</td>
+        <td><span class="code-cloze-ref-badge ref-na">无参考答案</span></td>
+      </tr>`;
+    }
+    const matched = matchClozeAnswer(b.answer, ref.answer, ref.answer_alt);
+    const altHint = (ref.answer_alt || []).length
+      ? `<span class="code-cloze-ref-alt-hint">亦可：${escapeHtml(ref.answer_alt.join(' / '))}</span>`
+      : '';
+    return `<tr class="code-cloze-ref-row ${matched ? 'ref-match' : 'ref-mismatch'}">
+      <td>空 ${b.n}</td>
+      <td><code class="code-cloze-ref-code">${escapeHtml(b.answer || '（空）')}</code></td>
+      <td><code class="code-cloze-ref-code">${escapeHtml(ref.answer)}</code>${altHint}</td>
+      <td><span class="code-cloze-ref-badge ${matched ? 'ref-ok' : 'ref-diff'}">${matched ? '一致' : '不一致'}</span></td>
+    </tr>`;
+  });
+  const comparable = aiBlanks.filter((b) => {
+    const ref = refBlanks[String(b.n)];
+    return ref && ref.answer;
+  });
+  const matchedCount = comparable.filter((b) => {
+    const ref = refBlanks[String(b.n)];
+    return matchClozeAnswer(b.answer, ref.answer, ref.answer_alt);
+  }).length;
+  const summaryText = comparable.length
+    ? `一致 ${matchedCount} / 共 ${comparable.length} 空（有参考答案）`
+    : '暂无可用参考答案';
+  return `<details class="code-cloze-ref-compare"${comparable.length ? ' open' : ''}>
+    <summary class="code-cloze-ref-summary-row">
+      <span>与参考答案对照</span>
+      <span class="code-cloze-ref-summary ${matchedCount === comparable.length && comparable.length ? 'is-perfect' : ''}">${summaryText}</span>
+    </summary>
+    <div class="code-cloze-ref-table-wrap">
+      <table class="code-cloze-ref-table">
+        <thead>
+          <tr><th>空</th><th>AI 答案</th><th>参考答案</th><th>状态</th></tr>
+        </thead>
+        <tbody>${rows.join('')}</tbody>
+      </table>
+    </div>
+    <p class="form-hint code-cloze-ref-note">只读对照：忽略首尾与中间多余空白；不做法题输入判分。</p>
+  </details>`;
 }
 
 function updateDeliverablePreviewChrome() {
@@ -6492,12 +7087,280 @@ function switchDeliverablePreviewTab(tabId) {
   if (currentDeliverable) renderDeliverablePreview(currentDeliverable);
 }
 
+function isTheoryDeliverable(dlv) {
+  return dlv?.type === 'theory';
+}
+
+function resetTheoryWorkspaceState() {
+  window._theoryQuestionId = null;
+  window._theoryViewTab = 'questions';
+  window._theoryWorkspaceEntered = false;
+  if (window.TheoryMotion?.killTheoryMotion) window.TheoryMotion.killTheoryMotion();
+  document.getElementById('deliverableGrid')?.classList.remove('deliverable-grid--theory');
+  document.getElementById('theoryCopyAllBtn')?.remove();
+}
+
+function parseTheoryAnswerBlocks(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+
+  const headerRe = /^\*\*(第?\d+题[^*]*|[^*]+)\*\*\s*$/;
+  const lines = raw.split('\n');
+  const chunks = [];
+  let current = null;
+
+  for (const line of lines) {
+    const m = line.match(headerRe);
+    if (m) {
+      if (current) chunks.push(current);
+      const title = m[1].trim();
+      const idMatch = title.match(/^第?(\d+)题/);
+      current = {
+        id: idMatch ? idMatch[1] : String(chunks.length + 1),
+        title,
+        bodyLines: [],
+      };
+    } else if (current) {
+      current.bodyLines.push(line);
+    } else if (line.trim()) {
+      if (!current) current = { id: '1', title: '简答答案', bodyLines: [] };
+      current.bodyLines.push(line);
+    }
+  }
+  if (current) {
+    chunks.push({
+      id: current.id,
+      title: current.title,
+      body: current.bodyLines.join('\n').trim(),
+    });
+  }
+  if (chunks.length) return chunks;
+
+  const numbered = raw.split(/(?=^\d+[.、．]\s)/m).filter((s) => s.trim());
+  if (numbered.length > 1) {
+    return numbered.map((chunk, i) => {
+      const firstLine = (chunk.trim().split('\n')[0] || '').trim();
+      return {
+        id: String(i + 1),
+        title: firstLine.slice(0, 80) || `第 ${i + 1} 题`,
+        body: chunk.trim(),
+      };
+    });
+  }
+
+  return [{ id: 'all', title: '简答答案', body: raw }];
+}
+
+function getTheoryAnswerBlocks(dlv) {
+  return parseTheoryAnswerBlocks((dlv?.sections || {}).answer || '');
+}
+
+function getActiveTheoryBlock(dlv) {
+  const blocks = getTheoryAnswerBlocks(dlv);
+  if (!blocks.length) return null;
+  const wanted = window._theoryQuestionId;
+  if (wanted != null && wanted !== '') {
+    const hit = blocks.find((b) => String(b.id) === String(wanted));
+    if (hit) return hit;
+  }
+  return blocks[0];
+}
+
+function ensureTheoryCopyAllBtn() {
+  const actions = document.querySelector('.deliverable-toolbar-actions');
+  if (!actions || document.getElementById('theoryCopyAllBtn')) return;
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn-secondary btn-sm';
+  btn.id = 'theoryCopyAllBtn';
+  btn.innerHTML = `${ico('copy', 'icon-sm')}复制全部`;
+  btn.onclick = () => copyTheoryAllAnswers();
+  actions.insertBefore(btn, actions.firstChild);
+}
+
+function removeTheoryCopyAllBtn() {
+  document.getElementById('theoryCopyAllBtn')?.remove();
+}
+
+async function copyTheoryAllAnswers() {
+  if (!currentDeliverable || !isTheoryDeliverable(currentDeliverable)) return;
+  const text = String((currentDeliverable.sections || {}).answer || '').trim();
+  if (!text) {
+    showToast('暂无简答内容', 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('已复制全部简答', 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyActiveTheoryQuestion() {
+  if (!currentDeliverable || !isTheoryDeliverable(currentDeliverable)) return;
+  await copyTheoryQuestionBody(getActiveTheoryBlock(currentDeliverable));
+}
+
+async function copyTheoryQuestionBody(block) {
+  const text = String(block?.body || '').trim();
+  if (!text) {
+    showToast('本题暂无内容', 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('已复制本题', 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+function switchTheoryQuestion(questionId) {
+  window._theoryQuestionId = String(questionId);
+  window._theoryViewTab = 'questions';
+  if (currentDeliverable) renderTheoryWorkspace(currentDeliverable, { animate: true });
+}
+
+function switchTheoryNotesTab() {
+  window._theoryViewTab = 'notes';
+  if (currentDeliverable) renderTheoryWorkspace(currentDeliverable, { animate: true });
+}
+
+function renderTheoryWorkspace(dlv, opts = {}) {
+  const grid = document.getElementById('deliverableGrid');
+  const tabsEl = document.getElementById('deliverableTabs');
+  const navCount = document.getElementById('deliverableNavCount');
+  const navTitle = document.querySelector('.deliverable-nav-title');
+  const titleEl = document.getElementById('deliverableSectionTitle');
+  const copyBtn = document.getElementById('copySectionBtn');
+  const body = document.getElementById('deliverableSectionBody');
+  const previewTabs = document.getElementById('deliverablePreviewTabs');
+  const badge = document.getElementById('deliverableValidationBadge');
+  const noteEl = document.getElementById('deliverableValidationNote');
+  if (!grid || !tabsEl || !body) return;
+
+  grid.classList.add('deliverable-grid--theory');
+  ensureTheoryCopyAllBtn();
+  if (previewTabs) previewTabs.classList.add('is-hidden');
+
+  const blocks = getTheoryAnswerBlocks(dlv);
+  const notes = String((dlv.sections || {}).notes || '').trim();
+  const viewingNotes = window._theoryViewTab === 'notes';
+
+  if (badge) {
+    badge.textContent = blocks.length > 1 ? `简答题 · 共 ${blocks.length} 题` : '简答题';
+    badge.className = 'deliverable-validation-badge skipped';
+  }
+  if (noteEl) noteEl.textContent = '逐题阅读与复制答案';
+  if (navTitle) {
+    navTitle.innerHTML = `<span class="icon icon-sm" data-icon="layout-list"></span>题目导航`;
+    if (window.Icons?.initDataIcons) Icons.initDataIcons(navTitle);
+  }
+  if (navCount) {
+    navCount.textContent = blocks.length > 1 ? `${blocks.length} 题` : '单题';
+  }
+
+  const activeBlock = getActiveTheoryBlock(dlv);
+  if (!window._theoryQuestionId && activeBlock) {
+    window._theoryQuestionId = String(activeBlock.id);
+  }
+
+  tabsEl.innerHTML = blocks.map((b) => {
+    const isActive = !viewingNotes && String(b.id) === String(activeBlock?.id);
+    const hasContent = Boolean(b.body);
+    const label = b.title.length > 28 ? `${b.title.slice(0, 28)}…` : b.title;
+    const statusHtml = hasContent
+      ? '<span class="deliverable-nav-status icon icon-sm" data-icon="check-circle"></span>'
+      : '<span class="deliverable-nav-status" aria-hidden="true"></span>';
+    return `<button type="button" role="tab" aria-selected="${isActive}"
+      class="deliverable-nav-item${isActive ? ' active' : ''}${hasContent ? ' has-content' : ' empty'}"
+      data-theory-q="${escapeHtml(String(b.id))}" onclick="switchTheoryQuestion('${escapeHtml(String(b.id))}')">
+      ${statusHtml}
+      <span class="deliverable-nav-text">
+        <span class="deliverable-nav-label">${escapeHtml(label)}</span>
+        <span class="deliverable-nav-meta">${hasContent ? '已生成' : '暂无'}</span>
+      </span>
+    </button>`;
+  }).join('')
+    + (notes
+      ? `<button type="button" role="tab" aria-selected="${viewingNotes}"
+      class="deliverable-nav-item${viewingNotes ? ' active' : ''} has-content"
+      onclick="switchTheoryNotesTab()">
+      <span class="deliverable-nav-status icon icon-sm" data-icon="check-circle"></span>
+      <span class="deliverable-nav-text">
+        <span class="deliverable-nav-label">备注</span>
+        <span class="deliverable-nav-meta">已生成</span>
+      </span>
+    </button>`
+      : '');
+  if (window.Icons?.initDataIcons) Icons.initDataIcons(tabsEl);
+
+  if (viewingNotes) {
+    if (titleEl) titleEl.textContent = '备注';
+    body.innerHTML = notes
+      ? `<div class="theory-qa-card"><div class="theory-qa-body">${escapeHtml(notes).replace(/\n/g, '<br>')}</div></div>`
+      : emptyStateHtml('file-text', '暂无备注', '');
+    if (copyBtn) {
+      copyBtn.disabled = !notes;
+      copyBtn.innerHTML = `${ico('copy', 'icon-sm')}复制备注`;
+    }
+  } else if (activeBlock?.body) {
+    if (titleEl) titleEl.textContent = activeBlock.title;
+    body.innerHTML = `<article class="theory-qa-card" data-theory-card="${escapeHtml(String(activeBlock.id))}">
+      <h5 class="theory-qa-title">${escapeHtml(activeBlock.title)}</h5>
+      <div class="theory-qa-body">${escapeHtml(activeBlock.body).replace(/\n/g, '<br>')}</div>
+      <div class="theory-qa-actions">
+        <button type="button" class="btn-ghost btn-sm" onclick="copyActiveTheoryQuestion()">
+          ${ico('copy', 'icon-sm')}复制本题
+        </button>
+      </div>
+    </article>`;
+    if (copyBtn) {
+      copyBtn.disabled = false;
+      copyBtn.innerHTML = `${ico('copy', 'icon-sm')}复制本题`;
+    }
+  } else {
+    if (titleEl) titleEl.textContent = '简答答案';
+    body.innerHTML = emptyStateHtml('file-text', '暂无简答内容', '执行完成后将显示逐题答案');
+    if (copyBtn) copyBtn.disabled = true;
+  }
+
+  updateDeliverablePreviewChrome();
+
+  const shouldEnter = !window._theoryWorkspaceEntered && !opts.animate;
+  if (shouldEnter) {
+    window._theoryWorkspaceEntered = true;
+    const cards = body.querySelectorAll('.theory-qa-card');
+    const contentCol = document.querySelector('.deliverable-content-col');
+    if (window.TheoryMotion?.animateTheoryWorkspaceEnter) {
+      window.TheoryMotion.animateTheoryWorkspaceEnter(grid, cards, contentCol);
+    }
+  } else if (opts.animate && window.TheoryMotion?.animateTheoryTabSwitch) {
+    window.TheoryMotion.animateTheoryTabSwitch(body);
+  }
+}
+
 function renderDeliverableWorkspace(dlv) {
   const wrap = document.getElementById('deliverableWorkspace');
   if (!wrap || !dlv) return;
   uiShow(wrap, 'block');
   currentDeliverable = dlv;
+
+  if (!isTheoryDeliverable(dlv)) {
+    resetTheoryWorkspaceState();
+  }
+
   activeDeliverableTab = normalizeDeliverableTextTab(activeDeliverableTab, dlv);
+  const copyBtn = document.getElementById('copySectionBtn');
+  if (copyBtn) {
+    copyBtn.innerHTML = `${ico('copy', 'icon-sm')}复制本节`;
+  }
+  const previewTabs = document.getElementById('deliverablePreviewTabs');
+  if (previewTabs) {
+    previewTabs.querySelector('[data-preview="code"]')?.classList.remove('is-hidden');
+    previewTabs.querySelector('[data-preview="diagrams"]')?.classList.remove('is-hidden');
+  }
 
   const badge = document.getElementById('deliverableValidationBadge');
   const noteEl = document.getElementById('deliverableValidationNote');
@@ -6511,6 +7374,23 @@ function renderDeliverableWorkspace(dlv) {
 
   renderDeliverableProvenance(dlv);
   enrichDeliverableAsync(dlv);
+
+  if (isMixedAssignmentDeliverable(dlv)) {
+    renderMixedAssignmentWorkspace(dlv);
+    updateDeliverablePreviewChrome();
+    return;
+  }
+
+  if (isCodeClozeDeliverable(dlv)) {
+    renderCodeClozeWorkspace(dlv);
+    updateDeliverablePreviewChrome();
+    return;
+  }
+
+  if (isTheoryDeliverable(dlv)) {
+    renderTheoryWorkspace(dlv);
+    return;
+  }
 
   const filledCount = DELIVERABLE_TEXT_SECTIONS.filter((t) => deliverableSectionHasContent(dlv, t.id)).length;
   const navCount = document.getElementById('deliverableNavCount');
@@ -6544,7 +7424,6 @@ function renderDeliverableWorkspace(dlv) {
   const activeMeta = DELIVERABLE_TEXT_SECTIONS.find((t) => t.id === activeDeliverableTab);
   if (titleEl && activeMeta) titleEl.textContent = activeMeta.label;
 
-  const copyBtn = document.getElementById('copySectionBtn');
   if (copyBtn) {
     const hasText = deliverableSectionHasContent(dlv, activeDeliverableTab);
     copyBtn.disabled = !hasText;
@@ -6555,7 +7434,238 @@ function renderDeliverableWorkspace(dlv) {
   updateDeliverablePreviewChrome();
 }
 
+function renderMixedAssignmentWorkspace(dlv) {
+  const parts = Array.isArray(dlv.mixed_parts) ? dlv.mixed_parts : [];
+  const tabsEl = document.getElementById('deliverableTabs');
+  const navCount = document.getElementById('deliverableNavCount');
+  const titleEl = document.getElementById('deliverableSectionTitle');
+  const copyBtn = document.getElementById('copySectionBtn');
+  const body = document.getElementById('deliverableSectionBody');
+  const previewTabs = document.getElementById('deliverablePreviewTabs');
+  const codeEl = document.getElementById('deliverableCodePreview');
+  const diagramsWrap = document.getElementById('deliverableDiagrams');
+  if (!tabsEl || !body) return;
+
+  if (!window._mixedDeliverableTab && parts.length) {
+    window._mixedDeliverableTab = String(parts[0].segment_id ?? 0);
+  }
+  const activePart = getActiveMixedDeliverablePart(dlv);
+
+  if (navCount) {
+    navCount.textContent = `混排卷 · ${parts.length} 段`;
+  }
+  tabsEl.innerHTML = parts.map((p) => {
+    const isActive = String(p.segment_id) === String(activePart?.segment_id);
+    const label = p.title || (p.type === 'code_cloze' ? '代码填空' : '简答题');
+    const typeBadge = p.type === 'code_cloze'
+      ? '<span class="mixed-segment-badge mixed-segment-badge-cloze">填空</span>'
+      : '<span class="mixed-segment-badge mixed-segment-badge-theory">简答</span>';
+    const meta = p.type === 'code_cloze'
+      ? `${Object.keys(p.code_cloze?.blanks || {}).length} 空`
+      : (p.answer_text ? '已生成' : '暂无');
+    const hasContent = p.type === 'code_cloze'
+      ? Object.keys(p.code_cloze?.blanks || {}).length > 0
+      : Boolean(p.answer_text);
+    const statusHtml = hasContent
+      ? '<span class="deliverable-nav-status icon icon-sm" data-icon="check-circle"></span>'
+      : '<span class="deliverable-nav-status" aria-hidden="true"></span>';
+    return `<button type="button" role="tab" aria-selected="${isActive}"
+      class="deliverable-nav-item${isActive ? ' active' : ''}${hasContent ? ' has-content' : ' empty'}"
+      data-mixed-seg="${p.segment_id}" onclick="switchMixedDeliverableTab('${p.segment_id}')">
+      ${statusHtml}
+      <span class="deliverable-nav-text">
+        <span class="deliverable-nav-label">${typeBadge}${escapeHtml(label)}</span>
+        <span class="deliverable-nav-meta">${escapeHtml(meta)}</span>
+      </span>
+    </button>`;
+  }).join('');
+  if (window.Icons?.initDataIcons) Icons.initDataIcons(tabsEl);
+
+  if (titleEl && activePart) {
+    titleEl.textContent = activePart.title || (activePart.type === 'code_cloze' ? '代码填空' : '简答题');
+  }
+
+  if (activePart?.type === 'code_cloze') {
+    const clozeDlv = {
+      ...dlv,
+      type: 'code_cloze',
+      code_cloze: activePart.code_cloze || dlv.code_cloze || {},
+    };
+    renderCodeClozeWorkspace(clozeDlv, {
+      embeddedInMixed: true,
+      segmentId: activePart.segment_id,
+    });
+    return;
+  }
+
+  window._mixedClozeBlankTab = null;
+  if (previewTabs) previewTabs.classList.add('is-hidden');
+  if (codeEl) {
+    codeEl.innerHTML = '';
+    uiHide(codeEl);
+  }
+  if (diagramsWrap) {
+    diagramsWrap.innerHTML = '';
+    uiHide(diagramsWrap);
+  }
+  const text = String(activePart?.answer_text || '').trim();
+  body.innerHTML = text
+    ? `<div class="deliverable-section-text">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`
+    : emptyStateHtml('file-text', '暂无简答内容', '执行完成后将显示本段答案');
+  if (copyBtn) {
+    copyBtn.disabled = !text;
+    copyBtn.innerHTML = `${ico('copy', 'icon-sm')}复制本节`;
+  }
+  updateDeliverablePreviewChrome();
+}
+
+function switchMixedDeliverableTab(segmentId) {
+  window._mixedDeliverableTab = String(segmentId);
+  window._mixedClozeBlankTab = null;
+  activeDeliverableTab = 'blank:1';
+  if (currentDeliverable) renderMixedAssignmentWorkspace(currentDeliverable);
+}
+
+function switchMixedClozeBlankTab(blankId) {
+  window._mixedClozeBlankTab = String(blankId);
+  activeDeliverableTab = `blank:${blankId}`;
+  if (currentDeliverable && isMixedAssignmentDeliverable(currentDeliverable)) {
+    renderMixedAssignmentWorkspace(currentDeliverable);
+  }
+}
+
+function renderCodeClozeWorkspace(dlv, opts = {}) {
+  const embeddedInMixed = opts.embeddedInMixed === true;
+  const segmentId = opts.segmentId;
+  const tabsEl = document.getElementById('deliverableTabs');
+  const navCount = document.getElementById('deliverableNavCount');
+  const titleEl = document.getElementById('deliverableSectionTitle');
+  const copyBtn = document.getElementById('copySectionBtn');
+  const body = document.getElementById('deliverableSectionBody');
+  const codeEl = document.getElementById('deliverableCodePreview');
+  const diagramsWrap = document.getElementById('deliverableDiagrams');
+  const previewTabs = document.getElementById('deliverablePreviewTabs');
+  const blanks = getCodeClozeBlankEntries(dlv);
+  const filled = blanks.filter((b) => b.answer).length;
+
+  if (!embeddedInMixed) {
+    if (navCount) navCount.textContent = `共 ${blanks.length} 空 · ${filled} 已填写`;
+    if (titleEl) titleEl.textContent = '空号答案';
+  } else if (titleEl) {
+    titleEl.textContent = '空号答案';
+  }
+
+  const blankTabId = embeddedInMixed && window._mixedClozeBlankTab
+    ? `blank:${window._mixedClozeBlankTab}`
+    : activeDeliverableTab;
+  const currentBlank = Number(String(blankTabId || '').replace('blank:', ''));
+  const selected = blanks.find((b) => b.n === currentBlank) || blanks[0] || null;
+  if (selected) {
+    activeDeliverableTab = `blank:${selected.n}`;
+    if (embeddedInMixed) window._mixedClozeBlankTab = String(selected.n);
+  }
+
+  if (copyBtn) {
+    copyBtn.innerHTML = `${ico('copy', 'icon-sm')}复制本空`;
+    const hasCurrent = selected && selected.answer;
+    copyBtn.disabled = !hasCurrent;
+  }
+
+  const blankNavHtml = blanks.map((b) => {
+    const activeId = `blank:${b.n}`;
+    const isActive = selected && b.n === selected.n;
+    const answerMeta = b.answer || '待填写';
+    const onClick = embeddedInMixed
+      ? `switchMixedClozeBlankTab('${b.n}')`
+      : `switchDeliverableTab('${activeId}')`;
+    return `<button type="button" role="tab" aria-selected="${isActive ? 'true' : 'false'}"
+      class="mixed-cloze-blank-item${isActive ? ' active' : ''}${b.answer ? ' has-content' : ''}"
+      data-tab="${activeId}" onclick="${onClick}">
+      <span class="mixed-cloze-blank-label">空 ${b.n}</span>
+      <span class="mixed-cloze-blank-meta">${escapeHtml(answerMeta)}</span>
+    </button>`;
+  }).join('');
+
+  if (!embeddedInMixed && tabsEl) {
+    tabsEl.innerHTML = blanks.map((b) => {
+      const activeId = `blank:${b.n}`;
+      const isActive = selected && b.n === selected.n;
+      const answerMeta = b.answer || '待填写';
+      const statusHtml = b.answer
+        ? '<span class="deliverable-nav-status icon icon-sm" data-icon="check-circle"></span>'
+        : '<span class="deliverable-nav-status" aria-hidden="true"></span>';
+      return `<button type="button" role="tab" aria-selected="${isActive ? 'true' : 'false'}"
+        class="deliverable-nav-item${isActive ? ' active' : ''}${b.answer ? ' has-content' : ' empty'}"
+        data-tab="${activeId}" onclick="switchDeliverableTab('${activeId}')">
+        ${statusHtml}
+        <span class="deliverable-nav-text">
+          <span class="deliverable-nav-label">空 ${b.n}</span>
+          <span class="deliverable-nav-meta">${escapeHtml(answerMeta)}</span>
+        </span>
+      </button>`;
+    }).join('');
+    if (window.Icons?.initDataIcons) Icons.initDataIcons(tabsEl);
+  }
+
+  if (body) {
+    const refBlanks = getCodeClozeReferenceBlanks(dlv, segmentId);
+    const compareHtml = buildCodeClozeReferenceCompareHtml(blanks, refBlanks);
+    const innerNav = embeddedInMixed && blanks.length
+      ? `<div class="mixed-cloze-inner-nav" role="tablist" aria-label="空号">${blankNavHtml}</div>`
+      : '';
+    if (selected) {
+      const brief = selected.brief
+        ? `<div class="code-cloze-blank-brief">${escapeHtml(selected.brief)}</div>`
+        : '';
+      body.innerHTML = `<div class="mixed-cloze-inner">${innerNav}<div class="code-cloze-answer-card">
+        <div class="code-cloze-blank-head">空 ${selected.n}</div>
+        <pre class="deliverable-code-block">${escapeHtml(selected.answer || '（暂无答案）')}</pre>
+        ${brief}
+      </div>${compareHtml}</div>`;
+    } else {
+      body.innerHTML = `<div class="mixed-cloze-inner">${innerNav}<p class="form-hint">（未识别到空号）</p>${compareHtml}</div>`;
+    }
+  }
+
+  if (previewTabs) {
+    previewTabs.classList.remove('is-hidden');
+    previewTabs.querySelector('[data-preview="code"]')?.classList.remove('is-hidden');
+    previewTabs.querySelector('[data-preview="diagrams"]')?.classList.add('is-hidden');
+  }
+  activeDeliverablePreviewTab = 'code';
+  if (codeEl) {
+    const completed = getCodeClozeCompletedCode(dlv);
+    const note = getCodeClozePatternNote(dlv);
+    codeEl.innerHTML = completed
+      ? `<pre class="deliverable-code-block">${escapeHtml(completed)}</pre>`
+      : '<p class="form-hint">（无完整代码预览）</p>';
+    if (note) {
+      codeEl.innerHTML += `<p class="form-hint code-cloze-pattern-note">${escapeHtml(note)}</p>`;
+    }
+  }
+  if (diagramsWrap) {
+    diagramsWrap.innerHTML = '';
+    uiHide(diagramsWrap);
+  }
+  if (codeEl) uiShow(codeEl);
+  updateDeliverablePreviewCopyBtn(dlv, { embeddedInMixed });
+  if (embeddedInMixed) updateDeliverablePreviewChrome();
+}
+
 function switchDeliverableTab(tabId) {
+  if (currentDeliverable && isMixedAssignmentDeliverable(currentDeliverable)) {
+    if (String(tabId).startsWith('blank:')) {
+      switchMixedClozeBlankTab(String(tabId).replace('blank:', ''));
+    }
+    return;
+  }
+  if (currentDeliverable && isCodeClozeDeliverable(currentDeliverable)) {
+    if (!String(tabId).startsWith('blank:')) return;
+    activeDeliverableTab = tabId;
+    renderDeliverableWorkspace(currentDeliverable);
+    animateDeliverableSectionEnter();
+    return;
+  }
   if (!DELIVERABLE_TEXT_SECTIONS.some((t) => t.id === tabId)) return;
   activeDeliverableTab = tabId;
   if (currentDeliverable) {
@@ -6597,25 +7707,42 @@ function renderDeliverablePreview(dlv) {
 
   const files = dlv.code?.files || [];
   codeEl.innerHTML = files.length
-    ? files.map((f) => `
+    ? files.map((f, idx) => `
       <div class="deliverable-code-file">
-        <div class="deliverable-code-filename">${escapeHtml(f.name || 'code')}</div>
+        <div class="deliverable-code-file-head">
+          <div class="deliverable-code-filename">${escapeHtml(f.name || 'code')}</div>
+          <button type="button" class="btn-ghost btn-xs" onclick="copyDeliverableCodeFile(${idx})" title="复制此文件">
+            <span class="icon icon-sm" data-icon="copy"></span>复制
+          </button>
+        </div>
         <pre class="deliverable-code-block">${escapeHtml(f.code || '')}</pre>
       </div>`).join('')
     : '<p class="form-hint">（无代码）</p>';
+  if (files.length && window.Icons?.initDataIcons) Icons.initDataIcons(codeEl);
 
   const items = dlv.diagrams || [];
   diagramsWrap.innerHTML = items.length
-    ? items.map((d) => {
+    ? items.map((d, idx) => {
       const img = d.image_b64
         ? `<img src="data:image/png;base64,${d.image_b64}" alt="${escapeHtml(d.title || '')}" class="deliverable-diagram-img"/>`
         : '';
       const src = d.plantuml
         ? `<pre class="deliverable-code-block">${escapeHtml(d.plantuml)}</pre>`
         : '';
-      return `<div class="deliverable-diagram-card"><h5>${escapeHtml(d.title || '图')}</h5>${img}${src}</div>`;
+      const actions = [];
+      if (d.image_b64) {
+        actions.push(`<button type="button" class="btn-ghost btn-xs" onclick="copyDeliverableDiagramImage(${idx})"><span class="icon icon-sm" data-icon="copy"></span>复制图片</button>`);
+      }
+      if (d.plantuml) {
+        actions.push(`<button type="button" class="btn-ghost btn-xs" onclick="copyDeliverableDiagramSource(${idx})"><span class="icon icon-sm" data-icon="copy"></span>复制图源</button>`);
+      }
+      const actionsHtml = actions.length
+        ? `<div class="deliverable-diagram-actions">${actions.join('')}</div>`
+        : '';
+      return `<div class="deliverable-diagram-card"><h5>${escapeHtml(d.title || '图')}</h5>${img}${src}${actionsHtml}</div>`;
     }).join('')
     : '<p class="form-hint">（无图表）</p>';
+  if (items.length && window.Icons?.initDataIcons) Icons.initDataIcons(diagramsWrap);
 
   const showCode = activeDeliverablePreviewTab === 'code';
   if (showCode) {
@@ -6625,9 +7752,256 @@ function renderDeliverablePreview(dlv) {
     uiHide(codeEl);
     uiShow(diagramsWrap);
   }
+
+  updateDeliverablePreviewCopyBtn(dlv);
+}
+
+function updateDeliverablePreviewCopyBtn(dlv, opts = {}) {
+  const btn = document.getElementById('copyPreviewBtn');
+  if (!btn) return;
+  const clozeDlv = opts.embeddedInMixed && isMixedAssignmentDeliverable(dlv)
+    ? {
+      ...dlv,
+      code_cloze: getActiveMixedDeliverablePart(dlv)?.code_cloze || dlv.code_cloze || {},
+    }
+    : dlv;
+  if (isCodeClozeDeliverable(clozeDlv) || opts.embeddedInMixed) {
+    const hasBlanks = getCodeClozeBlankEntries(clozeDlv).length > 0;
+    btn.disabled = !hasBlanks;
+    btn.innerHTML = `${ico('copy', 'icon-sm')}复制全部空号`;
+    return;
+  }
+  const isCode = activeDeliverablePreviewTab === 'code';
+  const hasCode = (dlv?.code?.files || []).length > 0;
+  const hasDiagrams = (dlv?.diagrams || []).length > 0;
+  btn.disabled = isCode ? !hasCode : !hasDiagrams;
+  btn.innerHTML = isCode
+    ? `${ico('copy', 'icon-sm')}复制代码`
+    : `${ico('copy', 'icon-sm')}复制图表`;
+}
+
+function buildDeliverableCodeText(dlv) {
+  const files = dlv?.code?.files || [];
+  if (!files.length) return '';
+  if (files.length === 1) return files[0].code || '';
+  return files.map((f) => {
+    const name = f.name || 'code';
+    return `// ${name}\n${f.code || ''}`;
+  }).join('\n\n');
+}
+
+async function copyImageB64ToClipboard(b64) {
+  const blob = await fetch(`data:image/png;base64,${b64}`).then((r) => r.blob());
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    throw new Error('当前环境不支持复制图片');
+  }
+  const type = blob.type || 'image/png';
+  await navigator.clipboard.write([new ClipboardItem({ [type]: blob })]);
+}
+
+async function copyDeliverableCode() {
+  if (!currentDeliverable) {
+    showToast('暂无答案交付物', 'error');
+    return;
+  }
+  const text = buildDeliverableCodeText(currentDeliverable);
+  if (!text.trim()) {
+    showToast('暂无代码', 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    const n = (currentDeliverable.code?.files || []).length;
+    showToast(n > 1 ? `已复制 ${n} 个代码文件` : '已复制代码', 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyDeliverableCodeFile(fileIndex) {
+  if (!currentDeliverable) return;
+  const file = (currentDeliverable.code?.files || [])[fileIndex];
+  if (!file?.code) {
+    showToast('暂无代码', 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(file.code);
+    showToast(`已复制 ${file.name || '代码'}`, 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyDeliverableDiagrams() {
+  if (!currentDeliverable) {
+    showToast('暂无答案交付物', 'error');
+    return;
+  }
+  const items = currentDeliverable.diagrams || [];
+  if (!items.length) {
+    showToast('暂无图表', 'info');
+    return;
+  }
+  if (items.length === 1 && items[0].image_b64) {
+    try {
+      await copyImageB64ToClipboard(items[0].image_b64);
+      showToast('已复制图表图片', 'success');
+      return;
+    } catch (err) {
+      if (items[0].plantuml) {
+        try {
+          await navigator.clipboard.writeText(items[0].plantuml);
+          showToast('图片复制不可用，已复制 PlantUML 源码', 'info');
+          return;
+        } catch (innerErr) {
+          showToast('复制失败: ' + innerErr.message, 'error');
+          return;
+        }
+      }
+      showToast('复制失败: ' + err.message, 'error');
+      return;
+    }
+  }
+
+  const sources = items
+    .map((d, i) => (d.plantuml
+      ? `' ${d.title || `图 ${i + 1}`}\n${d.plantuml}`
+      : ''))
+    .filter(Boolean);
+  if (sources.length) {
+    try {
+      await navigator.clipboard.writeText(sources.join('\n\n'));
+      showToast(`已复制 ${sources.length} 段图源`, 'success');
+      return;
+    } catch (err) {
+      showToast('复制失败: ' + err.message, 'error');
+      return;
+    }
+  }
+
+  const firstImage = items.find((d) => d.image_b64);
+  if (firstImage) {
+    try {
+      await copyImageB64ToClipboard(firstImage.image_b64);
+      showToast('已复制第一张图表（多张请点卡片上的「复制图片」）', 'success');
+    } catch (err) {
+      showToast('复制失败: ' + err.message, 'error');
+    }
+    return;
+  }
+  showToast('暂无可复制内容', 'info');
+}
+
+async function copyDeliverableDiagramImage(index) {
+  if (!currentDeliverable) return;
+  const item = (currentDeliverable.diagrams || [])[index];
+  if (!item?.image_b64) {
+    showToast('该图暂无图片', 'info');
+    return;
+  }
+  try {
+    await copyImageB64ToClipboard(item.image_b64);
+    showToast(`已复制「${item.title || '图表'}」图片`, 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyDeliverableDiagramSource(index) {
+  if (!currentDeliverable) return;
+  const item = (currentDeliverable.diagrams || [])[index];
+  if (!item?.plantuml) {
+    showToast('该图暂无源码', 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(item.plantuml);
+    showToast(`已复制「${item.title || '图表'}」图源`, 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyDeliverablePreview() {
+  if (currentDeliverable && isMixedAssignmentDeliverable(currentDeliverable)) {
+    const activePart = getActiveMixedDeliverablePart(currentDeliverable);
+    if (activePart?.type === 'code_cloze') {
+      const clozeDlv = {
+        ...currentDeliverable,
+        code_cloze: activePart.code_cloze || {},
+      };
+      const prev = currentDeliverable;
+      currentDeliverable = clozeDlv;
+      await copyCodeClozeAllBlanks();
+      currentDeliverable = prev;
+      return;
+    }
+    showToast('当前段无可复制的代码预览', 'info');
+    return;
+  }
+  if (currentDeliverable && isCodeClozeDeliverable(currentDeliverable)) {
+    await copyCodeClozeAllBlanks();
+    return;
+  }
+  if (activeDeliverablePreviewTab === 'code') {
+    await copyDeliverableCode();
+  } else {
+    await copyDeliverableDiagrams();
+  }
 }
 
 async function copyDeliverableSection() {
+  if (currentDeliverable && isTheoryDeliverable(currentDeliverable)) {
+    if (window._theoryViewTab === 'notes') {
+      const notes = String((currentDeliverable.sections || {}).notes || '').trim();
+      if (!notes) {
+        showToast('暂无备注', 'info');
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(notes);
+        showToast('已复制备注', 'success');
+      } catch (err) {
+        showToast('复制失败: ' + err.message, 'error');
+      }
+      return;
+    }
+    await copyTheoryQuestionBody(getActiveTheoryBlock(currentDeliverable));
+    return;
+  }
+  if (currentDeliverable && isMixedAssignmentDeliverable(currentDeliverable)) {
+    const activePart = getActiveMixedDeliverablePart(currentDeliverable);
+    if (activePart?.type === 'code_cloze') {
+      const blankNo = Number(String(activeDeliverableTab || '').replace('blank:', ''));
+      const clozeDlv = {
+        ...currentDeliverable,
+        code_cloze: activePart.code_cloze || {},
+      };
+      const prev = currentDeliverable;
+      currentDeliverable = clozeDlv;
+      await copyCodeClozeBlank(blankNo);
+      currentDeliverable = prev;
+      return;
+    }
+    const text = String(activePart?.answer_text || '').trim();
+    if (!text) {
+      showToast('本节暂无内容', 'info');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast('已复制本节简答', 'success');
+    } catch (err) {
+      showToast('复制失败: ' + err.message, 'error');
+    }
+    return;
+  }
+  if (currentDeliverable && isCodeClozeDeliverable(currentDeliverable)) {
+    const blankNo = Number(String(activeDeliverableTab || '').replace('blank:', ''));
+    await copyCodeClozeBlank(blankNo);
+    return;
+  }
   if (!currentDeliverable) {
     showToast('暂无答案交付物', 'error');
     return;
@@ -6641,6 +8015,44 @@ async function copyDeliverableSection() {
     await navigator.clipboard.writeText(text);
     const label = DELIVERABLE_TEXT_SECTIONS.find((t) => t.id === activeDeliverableTab)?.label || '本节';
     showToast(`已复制「${label}」`, 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyCodeClozeBlank(blankNo) {
+  if (!currentDeliverable || !isCodeClozeDeliverable(currentDeliverable)) {
+    showToast('暂无代码完形答案', 'info');
+    return;
+  }
+  const blanks = getCodeClozeBlankEntries(currentDeliverable);
+  const item = blanks.find((b) => b.n === blankNo);
+  if (!item?.answer) {
+    showToast('该空暂无答案', 'info');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(item.answer);
+    showToast(`已复制空 ${item.n}`, 'success');
+  } catch (err) {
+    showToast('复制失败: ' + err.message, 'error');
+  }
+}
+
+async function copyCodeClozeAllBlanks() {
+  if (!currentDeliverable || !isCodeClozeDeliverable(currentDeliverable)) {
+    showToast('暂无代码完形答案', 'info');
+    return;
+  }
+  const blanks = getCodeClozeBlankEntries(currentDeliverable);
+  if (!blanks.length) {
+    showToast('暂无空号答案', 'info');
+    return;
+  }
+  const text = blanks.map((b) => `${b.n}\t${b.answer || ''}`).join('\n');
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(`已复制 ${blanks.length} 个空号答案`, 'success');
   } catch (err) {
     showToast('复制失败: ' + err.message, 'error');
   }
@@ -6821,8 +8233,8 @@ function onSolveComplete(settings) {
   }
 
   const umlCount = solvedAnswers.filter(a => a?.uml_images_b64?.length).reduce((n, a) => n + a.uml_images_b64.length, 0);
-  const extra = umlCount ? `，已生成 ${umlCount} 张 UML 图` : '';
-  showToast(`答案已生成！请从工作区复制分节内容${extra}`, 'success');
+  const extra = umlCount ? `，右侧预览区可复制 ${umlCount} 张图表` : '';
+  showToast(`答案已生成！复制分节正文，或在右侧预览区复制代码/图表${extra}`, 'success');
 }
 
 // ============================
@@ -7141,6 +8553,7 @@ async function openReportFolder() {
 }
 
 function startNew() {
+  resetTheoryWorkspaceState();
   currentFile = null;
   parsedQuestions = [];
   solvedAnswers = [];
@@ -7353,7 +8766,7 @@ function renderHistory() {
 // 设置
 // ============================
 
-const SETTINGS_SCHEMA_VERSION = 6;
+const SETTINGS_SCHEMA_VERSION = 10;
 let _runtimeApiKey = '';
 let _encryptionAvailable = false;
 let _fallbackNotified = false;
@@ -7622,10 +9035,19 @@ function mergeSettings(saved) {
     experimentalReactMode: saved.experimentalReactMode === true,
     showThoughtTrace: saved.showThoughtTrace === true,
     optimizePlanFromUsage: saved.optimizePlanFromUsage === true,
-    autoRemediate: saved.autoRemediate === true,
+    autoRemediate: saved.autoRemediate !== false,
+    autoRemediateMaxRounds: Number.isFinite(Number(saved.autoRemediateMaxRounds))
+      ? Math.max(0, Math.min(5, Number(saved.autoRemediateMaxRounds)))
+      : 1,
+    maxReplanRounds: Number.isFinite(Number(saved.maxReplanRounds))
+      ? Math.max(0, Math.min(5, Number(saved.maxReplanRounds)))
+      : 1,
     solveQualityTier: ['fast', 'standard', 'thorough'].includes(saved.solveQualityTier)
       ? saved.solveQualityTier
       : 'standard',
+    solveQualityTierExplicit: saved.solveQualityTierExplicit === true,
+    autoFastTierForLightQuestions: saved.autoFastTierForLightQuestions !== false,
+    enableParallelModuleSteps: saved.enableParallelModuleSteps !== false,
     userConstraints: Array.isArray(saved.userConstraints) ? saved.userConstraints : [],
     provenanceCustomLabel: saved.provenanceCustomLabel || '',
     enableImageOcr: saved.enableImageOcr === true,
@@ -7660,6 +9082,31 @@ function mergeSettings(saved) {
     }
     if (version < 6) {
       migration.model = merged.model;
+    }
+    if (version < 7 && saved.autoRemediate !== false) {
+      migration.autoRemediate = true;
+      merged.autoRemediate = true;
+    }
+    if (version < 8) {
+      migration.autoRemediateMaxRounds = merged.autoRemediateMaxRounds;
+      merged.autoRemediateMaxRounds = merged.autoRemediateMaxRounds;
+    }
+    if (version < 9) {
+      migration.maxReplanRounds = merged.maxReplanRounds;
+      merged.maxReplanRounds = merged.maxReplanRounds;
+    }
+    if (version < 10) {
+      migration.autoFastTierForLightQuestions = true;
+      migration.enableParallelModuleSteps = true;
+      merged.autoFastTierForLightQuestions = true;
+      merged.enableParallelModuleSteps = true;
+      if (merged.solveQualityTier && merged.solveQualityTier !== 'standard') {
+        migration.solveQualityTierExplicit = true;
+        merged.solveQualityTierExplicit = true;
+      } else {
+        migration.solveQualityTierExplicit = false;
+        merged.solveQualityTierExplicit = false;
+      }
     }
     persistSettingsPatch(migration);
   }
@@ -7697,7 +9144,15 @@ function applySettingsToForm(settings) {
   const optimizeEl = document.getElementById('optimizePlanFromUsageSettings');
   if (optimizeEl) optimizeEl.checked = settings.optimizePlanFromUsage === true;
   const autoRemediateEl = document.getElementById('autoRemediateSettings');
-  if (autoRemediateEl) autoRemediateEl.checked = settings.autoRemediate === true;
+  if (autoRemediateEl) autoRemediateEl.checked = settings.autoRemediate !== false;
+  const autoRemediateRoundsEl = document.getElementById('autoRemediateMaxRoundsSettings');
+  if (autoRemediateRoundsEl) autoRemediateRoundsEl.value = String(settings.autoRemediateMaxRounds ?? 1);
+  const maxReplanRoundsEl = document.getElementById('maxReplanRoundsSettings');
+  if (maxReplanRoundsEl) maxReplanRoundsEl.value = String(settings.maxReplanRounds ?? 1);
+  const autoFastEl = document.getElementById('autoFastTierForLightQuestionsSettings');
+  if (autoFastEl) autoFastEl.checked = settings.autoFastTierForLightQuestions !== false;
+  const parallelEl = document.getElementById('enableParallelModuleStepsSettings');
+  if (parallelEl) parallelEl.checked = settings.enableParallelModuleSteps !== false;
   syncImageOcrSettingsUI(settings);
   refreshOcrStatusNotice().catch(() => {});
   updateKeyStorageNotice();
@@ -7862,7 +9317,12 @@ async function saveSettings() {
     showThoughtTrace: document.getElementById('showThoughtTraceSettings')?.checked === true,
     optimizePlanFromUsage: document.getElementById('optimizePlanFromUsageSettings')?.checked === true,
     autoRemediate: document.getElementById('autoRemediateSettings')?.checked === true,
+    autoRemediateMaxRounds: getAutoRemediateMaxRounds(),
+    maxReplanRounds: getMaxReplanRounds(),
     solveQualityTier: getSolveQualityTier(),
+    solveQualityTierExplicit: readSettings().solveQualityTierExplicit === true,
+    autoFastTierForLightQuestions: document.getElementById('autoFastTierForLightQuestionsSettings')?.checked !== false,
+    enableParallelModuleSteps: document.getElementById('enableParallelModuleStepsSettings')?.checked !== false,
     enableImageOcr: document.getElementById('enableImageOcrSettings')?.checked === true,
     imageOcrLang: document.getElementById('imageOcrLangSettings')?.value || 'chi_sim+eng',
     imageOcrMaxPages: parseInt(document.getElementById('imageOcrMaxPagesSettings')?.value, 10) || 20,
@@ -7994,6 +9454,9 @@ async function apiPost(path, data) {
     const e = new Error(msg);
     if (err.stale_documents === true) e.stale_documents = true;
     if (err.stale_plan === true) e.stale_plan = true;
+    if (typeof err.plan_fingerprint === 'string' && err.plan_fingerprint.trim()) {
+      e.plan_fingerprint = err.plan_fingerprint.trim();
+    }
     throw e;
   }
 

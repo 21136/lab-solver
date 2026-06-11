@@ -24,6 +24,8 @@ def test_planner_catalog_matches_legacy_set():
         {
             "solve_lab",
             "solve_theory",
+            "solve_short_answer",
+            "solve_code_cloze",
             "run_code",
             "render_uml",
             "present_deliverable",
@@ -39,6 +41,7 @@ def test_react_tool_schemas_match_legacy():
     assert schemas == REACT_TOOL_SCHEMAS
     assert set(schemas) == {
         "solve_lab",
+        "solve_code_cloze",
         "fix_code",
         "fix_diagrams",
         "run_code",

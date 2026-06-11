@@ -2,7 +2,7 @@
 
 const COMPLIANCE_STORAGE_KEY = 'compliance';
 const DISCLAIMER_VERSION = 1;
-const ONBOARDING_VERSION = 2;
+const ONBOARDING_VERSION = 3;
 
 const DISCLAIMER_HTML = `
 <p>本软件（解题能手）仅供<strong>课程学习与实验报告写作参考</strong>，不构成代写或学术不端服务。</p>
@@ -28,12 +28,12 @@ const PRIVACY_HTML = (logFilePath) => `
 
 const ONBOARDING_STEPS = [
   {
-    title: '1. 上传文档',
-    body: '将实验报告（.docx）或题目 PDF 拖入 Step 1。主路径是<strong>生成答案内容</strong>，由你自行粘贴到学校模版或学习通。',
+    title: '1. 添加题目',
+    body: 'Step 1 默认在左侧<strong>粘贴题目文字</strong>（超星/慕课复制即可，无需上传文件）。若有空白报告模板，可切到「上传文件」添加 .docx。主路径是<strong>生成答案内容</strong>，由你自行粘贴到学校模版或学习通。',
   },
   {
     title: '2. 生成约束与执行',
-    body: 'Step 2 可设置语言、是否内化验证代码、诚信标注等。点「生成计划 → 执行」后进入<strong>答案工作区</strong>，分节复制或下载 Markdown / docx / 代码 zip。',
+    body: 'Step 2 可设置语言、是否内化验证代码、诚信标注等。点「生成计划 → 执行」后进入<strong>答案工作区</strong>：中间复制各节正文，右侧预览区一键复制代码/图表。',
   },
   {
     title: '3. 填表为高级可选',
@@ -115,7 +115,7 @@ function showAppModal(options) {
   }
   if (checkWrap && checkEl) {
     if (options.checkboxLabel) {
-      checkWrap.style.display = 'flex';
+      checkWrap.classList.remove('is-hidden');
       checkEl.checked = false;
       const label = checkWrap.querySelector('span');
       if (label) label.textContent = options.checkboxLabel;
@@ -129,7 +129,7 @@ function showAppModal(options) {
         checkEl.onchange = null;
       }
     } else {
-      checkWrap.style.display = 'none';
+      checkWrap.classList.add('is-hidden');
       primaryBtn.disabled = false;
     }
   }
@@ -150,6 +150,7 @@ function showAppModal(options) {
       if (secondaryBtn) secondaryBtn.onclick = null;
       overlay.onclick = null;
       if (checkEl) checkEl.onchange = null;
+      if (checkWrap) checkWrap.classList.add('is-hidden');
     };
 
     primaryBtn.onclick = () => {

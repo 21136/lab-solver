@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from config import DOCX_OK
+from modules.code_cloze import normalize_reference_blanks
 
 
 CONTENT_ONLY_OUTPUT_MODES = frozenset({"deliverable", "answer_only"})
@@ -23,9 +24,45 @@ def is_content_only_output_mode(mode: str | None) -> bool:
     return (mode or "deliverable").strip().lower() in CONTENT_ONLY_OUTPUT_MODES
 
 
+def _reference_blanks_from_sources(*sources) -> dict[str, dict[str, Any]]:
+    for source in sources:
+        if source:
+            normalized = normalize_reference_blanks(source)
+            if normalized:
+                return normalized
+    return {}
+
+
+def _reference_blanks_from_question(q: dict) -> dict[str, dict[str, Any]]:
+    meta = q.get("metadata") or {}
+    return _reference_blanks_from_sources(
+        meta.get("reference_blanks"),
+        (meta.get("code_cloze") or {}).get("reference_blanks"),
+    )
+
+
+def _reference_blanks_from_ctx(ctx: dict, *, segment_id=None) -> dict[str, dict[str, Any]]:
+    """Optional answer key from parse / question metadata (E+; no LLM)."""
+    if segment_id is not None:
+        for q in (ctx.get("metadata") or {}).get("assignment_questions") or []:
+            if q.get("id") == segment_id:
+                found = _reference_blanks_from_question(q)
+                if found:
+                    return found
+    meta = ctx.get("metadata") or {}
+    question = ctx.get("question") or {}
+    qmeta = question.get("metadata") or {}
+    return _reference_blanks_from_sources(
+        meta.get("reference_blanks"),
+        qmeta.get("reference_blanks"),
+        (meta.get("code_cloze") or {}).get("reference_blanks"),
+        (qmeta.get("code_cloze") or {}).get("reference_blanks"),
+    )
+
+
 def _get_solve_data(ctx: dict) -> dict | None:
     mr = ctx.get("module_results") or {}
-    for key in ("solve_lab", "solve_theory"):
+    for key in ("solve_code_cloze", "solve_lab", "solve_short_answer", "solve_theory"):
         entry = mr.get(key) or {}
         if entry.get("ok") and entry.get("data"):
             return dict(entry["data"])
@@ -179,15 +216,147 @@ def _execution_block(ctx: dict) -> dict[str, Any]:
     }
 
 
-def build_deliverable(ctx: dict, *, deliverable_id: str | None = None) -> dict[str, Any]:
-    """Assemble LabDeliverable from agent context module_results."""
-    solve = _get_solve_data(ctx)
-    if not solve:
-        raise ValueError("无可用的解题结果（solve_lab / solve_theory）")
+def _build_mixed_assignment_deliverable(
+    ctx: dict, *, deliverable_id: str | None = None
+) -> dict[str, Any]:
+    """Assemble deliverable with one part per mixed-assignment segment (O10/R8)."""
+    segment_rows = list(ctx.get("segment_solve_results") or [])
+    if not segment_rows:
+        mr = ctx.get("module_results") or {}
+        for q in (ctx.get("metadata") or {}).get("assignment_questions") or []:
+            mod = "solve_code_cloze" if q.get("type") == "code_cloze" else "solve_theory"
+            data = (mr.get(mod) or {}).get("data")
+            if data:
+                segment_rows.append(
+                    {
+                        "segment_id": q.get("id"),
+                        "title": q.get("title") or "",
+                        "type": q.get("type"),
+                        "module": mod,
+                        "data": data,
+                    }
+                )
+    if not segment_rows:
+        raise ValueError("混排卷无可用的分段解题结果")
 
-    parsed = dict(solve.get("parsed") or {})
     now = datetime.now(timezone.utc).isoformat()
     did = deliverable_id or f"dlv_{uuid.uuid4().hex[:12]}"
+    parts: list[dict[str, Any]] = []
+    sections = {
+        "steps_analysis": "",
+        "result_description": "",
+        "summary": "",
+        "notes": "",
+    }
+    code_cloze_part: dict[str, Any] | None = None
+
+    for row in sorted(segment_rows, key=lambda r: int(r.get("segment_id") or 0)):
+        data = dict(row.get("data") or {})
+        parsed = dict(data.get("parsed") or {})
+        q_type = row.get("type") or (
+            "code_cloze" if row.get("module") == "solve_code_cloze" else "theory"
+        )
+        title = (row.get("title") or "").strip()
+        part: dict[str, Any] = {
+            "segment_id": row.get("segment_id"),
+            "title": title,
+            "type": q_type,
+        }
+        if q_type == "code_cloze":
+            part["code_cloze"] = {
+                "blanks": parsed.get("blanks") or data.get("blanks") or {},
+                "completed_code": parsed.get("completed_code") or data.get("code") or "",
+                "pattern_note": parsed.get("pattern_note") or "",
+            }
+            seg_ref = _reference_blanks_from_ctx(ctx, segment_id=row.get("segment_id"))
+            if seg_ref:
+                part["code_cloze"]["reference_blanks"] = seg_ref
+            code_cloze_part = part["code_cloze"]
+            if parsed.get("pattern_note"):
+                sections["notes"] = (
+                    sections["notes"] + "\n" + str(parsed.get("pattern_note"))
+                ).strip()
+        else:
+            text = (
+                data.get("answer")
+                or parsed.get("steps_analysis")
+                or parsed.get("summary")
+                or data.get("result_description")
+                or ""
+            )
+            part["answer_text"] = str(text).strip()
+            if part["answer_text"]:
+                label = title or f"题目 {int(row.get('segment_id') or 0) + 1}"
+                block = f"【{label}】\n{part['answer_text']}"
+                sections["steps_analysis"] = (
+                    sections["steps_analysis"] + "\n\n" + block
+                ).strip()
+        parts.append(part)
+
+    constraints: list[str] = list(ctx.get("user_constraints") or [])
+    integrity_hash = compute_integrity_hash({"sections": sections, "code": {}, "diagrams": []})
+    dlv: dict[str, Any] = {
+        "id": did,
+        "type": "mixed_assignment",
+        "created_at": now,
+        "sections": sections,
+        "code": {"language": "", "files": [], "main_file": ""},
+        "diagrams": [],
+        "execution": {
+            "validation_status": "not_requested",
+            "validation_note": "混排卷无统一代码验证",
+        },
+        "constraints_applied": constraints,
+        "provenance": _provenance_from_ctx(ctx, constraints, integrity_hash, now),
+        "quality": {"verify_passed": None, "checks": []},
+        "mixed_parts": parts,
+    }
+    if code_cloze_part:
+        dlv["code_cloze"] = dict(code_cloze_part)
+        ref_blanks = _reference_blanks_from_ctx(ctx)
+        if ref_blanks:
+            dlv["code_cloze"]["reference_blanks"] = ref_blanks
+    return dlv
+
+
+def build_deliverable(ctx: dict, *, deliverable_id: str | None = None) -> dict[str, Any]:
+    """Assemble LabDeliverable from agent context module_results."""
+    if (ctx.get("metadata") or {}).get("mixed_assignment"):
+        return _build_mixed_assignment_deliverable(ctx, deliverable_id=deliverable_id)
+    solve = _get_solve_data(ctx)
+    if not solve:
+        raise ValueError("无可用的解题结果（solve_lab / solve_code_cloze / solve_theory）")
+
+    parsed = dict(solve.get("parsed") or {})
+    solve_type = solve.get("type") or parsed.get("type") or ""
+    is_code_cloze = solve_type == "code_cloze"
+    is_theory_paper = solve_type in ("theory", "short_answer")
+    now = datetime.now(timezone.utc).isoformat()
+    did = deliverable_id or f"dlv_{uuid.uuid4().hex[:12]}"
+
+    if is_theory_paper:
+        answer_text = solve.get("answer") or parsed.get("answer") or ""
+        sections = {
+            "answer": answer_text,
+            "notes": parsed.get("notes") or solve.get("notes") or "",
+        }
+        integrity_hash = compute_integrity_hash({"sections": sections, "code": {}, "diagrams": []})
+        constraints: list[str] = list(ctx.get("user_constraints") or [])
+        return {
+            "id": did,
+            "type": "theory",
+            "created_at": now,
+            "sections": sections,
+            "code": {"files": [], "language": "", "main_file": ""},
+            "diagrams": [],
+            "execution": {
+                "validation_status": "not_requested",
+                "validation_note": "简答题无需代码验证",
+            },
+            "constraints_applied": constraints,
+            "provenance": _provenance_from_ctx(ctx, constraints, integrity_hash, now),
+            "quality": {"verify_passed": None, "checks": []},
+        }
 
     sections = {
         "steps_analysis": parsed.get("steps_analysis") or "",
@@ -227,8 +396,9 @@ def build_deliverable(ctx: dict, *, deliverable_id: str | None = None) -> dict[s
         for i, c in enumerate(verification.get("checks") or [])
     ]
 
-    return {
+    dlv: dict[str, Any] = {
         "id": did,
+        "type": "code_cloze" if is_code_cloze else "lab_report",
         "created_at": now,
         "sections": sections,
         "code": code_pkg,
@@ -241,6 +411,17 @@ def build_deliverable(ctx: dict, *, deliverable_id: str | None = None) -> dict[s
             "checks": quality_checks,
         },
     }
+    if is_code_cloze:
+        code_cloze: dict[str, Any] = {
+            "blanks": parsed.get("blanks") or {},
+            "completed_code": parsed.get("completed_code") or solve.get("code") or "",
+            "pattern_note": parsed.get("pattern_note") or "",
+        }
+        ref_blanks = _reference_blanks_from_ctx(ctx)
+        if ref_blanks:
+            code_cloze["reference_blanks"] = ref_blanks
+        dlv["code_cloze"] = code_cloze
+    return dlv
 
 
 def compute_integrity_hash(dlv: dict[str, Any]) -> str:

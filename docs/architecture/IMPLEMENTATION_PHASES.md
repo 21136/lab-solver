@@ -235,6 +235,9 @@
 | fill-unify | `/api/fill-report` 与 Agent 共用 `buildFillMetadata()`；training_table 自动检测 | ✅ |
 | thought-export | 思考过程 `.txt` 自动保存 + 手动导出；`thought_trace` 完整版 | ✅ |
 | paste-assignment | Step1「粘贴题目/要求」；`parse_inline_text` + `documents[].text_content` | ✅ |
+| step1-paste-first | Step1 默认「粘贴题目」内联文本框；仅文字可解析（`assignment_only`） | ✅ 2026-06-08 |
+| step3-copy-preview | 答案工作区预览栏「复制代码/图表」+ 逐文件/逐图复制；zip 降为导出菜单次要项 | ✅ 2026-06-08 |
+| bf44-parse-assignment-only | 修复 `assignment_only` 时 `/api/parse-report` 因 `fill_target=None` 崩溃（`split_at_heading` 安全访问） | ✅ 2026-06-08 |
 | da3-lab-table | 表格模版「实验名/实验目的/实验内容」识别与分格填表 + UML/截图 | ✅ |
 | objective-from-assignment | 「实验目的」从 `assignment_text` 解析，非 `steps_analysis` 首段 | ✅ |
 | react-empty-out | ReAct `run_code` 空 stdout 判失败 | ✅ |
@@ -276,7 +279,7 @@
 ### V3-3 落地摘要（2026-06-05）
 
 - `RunOrchestrator.run_verify(auto_remediate=...)`：verify → dirty → 局部重跑 → 再 verify（`max_rounds=1`）。
-- `POST /api/agent/run` body 支持 `auto_remediate?: boolean`（默认 false）。
+- `POST /api/agent/run` body 支持 `auto_remediate?: boolean`（**2026-06-08**：未传时 `standard`/`deep` 默认 `true`；可显式 `false`）。
 - ReAct JSON 输出 + THOUGHT/ACTION fallback（`parse_react_response`）；system prompt 注入 plan checklist。
 - 验收：`tests/test_auto_remediate.py`、`tests/test_react_parse.py`；pytest 全绿。
 
@@ -297,7 +300,21 @@
 
 **BF27 补丁（2026-06-06）**：`present_deliverable` 补 `react_alias`，与 prompt/checklist 对齐；见 `../logs/V1_BUGFIX_LOG.md` BF27。
 
-**与 V2 backlog 关系**：DA/IM（读题填表）与 V3（编排内核）可并行；C2 以 V3-4 为准实施。
+### `code_cloze` 冲刺摘要（2026-06-08）
+
+| 阶段 | 范围 | 状态 |
+|------|------|------|
+| A | HTML 题库 Facade 样板 | ✅ |
+| B | `detect_code_cloze` + `solve_code_cloze` + 解析/plan | ✅ |
+| C | Step3 空号工作区（`app.js` / `styles.css`） | ✅ |
+| C′ | ReAct bootstrap + registry 工具 + deliverable `type` + run 修补 | ✅ BF45–BF49 |
+| D | Word 代码空识别 | ⏳ |
+| E | 判分 / `answer_alt`（R6：HTML 核对 + `code_cloze.py` 纯函数） | ✅ 2026-06-08 |
+| E+ | Step3 只读对照（R7：`reference_blanks` 透传 + 逐空比对） | ✅ 2026-06-08 |
+
+规格：[CODE_CLOZE_QUESTIONS.md](../features/CODE_CLOZE_QUESTIONS.md) · 运行逻辑：[RUNTIME_LOGIC_ISSUES.md](RUNTIME_LOGIC_ISSUES.md) §2026-06-08 补充。
+
+**与 V2 backlog 关系**：DA/IM（读题填表）与 V3（编排内核）可并行；C2 以 V3-4 为准实施。O33 主路径已交付，剩余 D/E 挂 O10 混题型。
 
 ---
 
@@ -320,4 +337,4 @@ flowchart LR
 
 ---
 
-*文档版本：2026-06-05（V3-4 完成），与 LAB_SOLVER_AGENT_PLAN 附录 B/D 及 AGENT_ARCHITECTURE_V3 对齐。*
+*文档版本：2026-06-08（+ code_cloze A/B/C/C′），与 LAB_SOLVER_AGENT_PLAN 及 AGENT_ARCHITECTURE_V3 对齐。*

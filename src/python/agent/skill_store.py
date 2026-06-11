@@ -54,9 +54,55 @@ def _register(
     })
 
 
-def match_skills(ctx: dict) -> list[dict[str, Any]]:
+def _match_context_summary(match_ctx: dict) -> str:
+    lang = match_ctx.get("language") or ""
+    text = (match_ctx.get("full_text") or match_ctx.get("report_text") or "")[:120]
+    return f"language={lang}; text_snippet={text!r}"
+
+
+def _audit_skill_matches(
+    agent_ctx: dict,
+    matched: list[dict[str, Any]],
+    match_ctx: dict,
+    source: str,
+) -> None:
+    from agent.decision_log import append_decision
+
+    evidence = _match_context_summary(match_ctx)
+    if matched:
+        for skill in matched:
+            append_decision(
+                agent_ctx,
+                agent="skill_store",
+                decision="skill_matched",
+                source=source,
+                target=str(skill.get("id") or ""),
+                reason=str(skill.get("description") or skill.get("id") or ""),
+                evidence=evidence,
+            )
+    else:
+        append_decision(
+            agent_ctx,
+            agent="skill_store",
+            decision="skill_no_match",
+            source=source,
+            target="",
+            reason="no skills matched context triggers",
+            evidence=evidence,
+        )
+
+
+def match_skills(
+    ctx: dict,
+    *,
+    agent_ctx: dict | None = None,
+    audit_source: str = "",
+) -> list[dict[str, Any]]:
     """Return all skills whose trigger matches the given context."""
-    return [s for s in SKILLS if s["trigger"](ctx)]
+    matched = [s for s in SKILLS if s["trigger"](ctx)]
+    if agent_ctx is not None and audit_source:
+        _audit_skill_matches(agent_ctx, matched, ctx, audit_source)
+    return matched
 
 
 def build_skill_injection(ctx: dict) -> str:
@@ -259,6 +305,38 @@ def _suggested_trigger(kind: str, key: str) -> str:
     return f"{kind}={key}"
 
 
+def _audit_skill_candidates(
+    agent_ctx: dict,
+    signals: list[tuple[str, str]],
+    *,
+    source: str = "run_finalize",
+) -> None:
+    from agent.decision_log import append_decision
+
+    if not signals:
+        append_decision(
+            agent_ctx,
+            agent="skill_store",
+            decision="skill_candidate_skipped",
+            source=source,
+            target="",
+            reason="no run signals for skill candidates",
+            evidence="",
+        )
+        return
+    for kind, key in signals:
+        cid = _candidate_id(kind, key)
+        append_decision(
+            agent_ctx,
+            agent="skill_store",
+            decision="skill_candidate_recorded",
+            source=source,
+            target=cid,
+            reason=f"{kind}:{key}",
+            evidence=_suggested_trigger(kind, key),
+        )
+
+
 def record_skill_candidates_from_run(ctx: dict) -> list[dict[str, Any]]:
     """Append run signals; return newly promoted pending candidates."""
     now = datetime.now(timezone.utc)
@@ -279,6 +357,8 @@ def record_skill_candidates_from_run(ctx: dict) -> list[dict[str, Any]]:
     notes = ((solve.get("data") or {}).get("parsed") or {}).get("notes") or ""
     if isinstance(notes, str) and notes.strip():
         signals.append(("notes_hash", _notes_hash(notes)))
+
+    _audit_skill_candidates(ctx, signals)
 
     if not signals:
         return []

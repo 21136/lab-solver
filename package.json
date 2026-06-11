@@ -36,7 +36,9 @@
       {
         "from": "python-dist",
         "to": "python-dist",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "files": [
@@ -47,7 +49,12 @@
       "assets/**/*"
     ]
   },
-  "keywords": ["ai", "lab-report", "solver", "education"],
+  "keywords": [
+    "ai",
+    "lab-report",
+    "solver",
+    "education"
+  ],
   "author": "Lab Solver",
   "license": "MIT",
   "devDependencies": {
@@ -55,6 +62,7 @@
     "electron-builder": "^24.0.0"
   },
   "dependencies": {
-    "axios": "^1.7.0"
+    "axios": "^1.7.0",
+    "gsap": "^3.15.0"
   }
 }

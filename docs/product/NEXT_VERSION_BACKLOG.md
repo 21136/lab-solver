@@ -164,7 +164,8 @@ flowchart TB
 | O7 | **Word 文本框 / 内容控件（SDT）** | 只读 `paragraphs`，题在文本框 → 漏读 | 中 |
 | O8 | **页眉页脚** | 不抽取；要求常写在页脚 | 低 |
 | O9 | **公式 OMML / 图表 Chart** | 不读；理综/数据类实验 | 低 |
-| O10 | **同一 docx 混题型** | 解析几乎总是 `lab_report`；简答/选择 + 报告混排不会拆 | 中 |
+| O10 | **同一 docx 混题型** | ✅ R8 拆题 + R9 ReAct/深度联调与 Step3 UI。见 [CODE_CLOZE_QUESTIONS.md §6.3–6.4](../features/CODE_CLOZE_QUESTIONS.md) | 中 |
+| O33 | **代码完形填空（`code_cloze`）** | ✅ Phase A–G（R6 HTML 判分 · R7 Step3 对照 · R8 混排拆题 · R9 混排联调/UI）。见 [CODE_CLOZE_QUESTIONS.md](../features/CODE_CLOZE_QUESTIONS.md) · [CODE_CLOZE_ROUTING.md](../features/CODE_CLOZE_ROUTING.md) · BF45–BF53 | 低 |
 | O11 | **附件型作业** | 题目 pdf + 报告 docx + 代码 zip 工程；无「工程型」pipeline | 中 |
 
 *与 DA1 联动：嵌套表、单元格内图 → DA1 + IM1。*
@@ -233,7 +234,7 @@ flowchart TB
 
 | ID | 项 | 说明 | 优先级 |
 |----|-----|------|--------|
-| O29 | **作业类型向导** | 上传后选：标准三四五 / 实训表 / 题在图里 / 工程代码 → 不同 pipeline；**「题在网页」可复制文字**已由 Step1 粘贴覆盖 | 中 |
+| O29 | **作业类型向导** | 上传后选：标准三四五 / 实训表 / 题在图里 / 工程代码 → 不同 pipeline；**「题在网页」** 已由 Step1 默认内联粘贴覆盖（2026-06-08） | 中 |
 | O30 | **识题预览（确认再 plan）** | Step2 O30：`assignment_text` + `image_sections`（ocr/vision 标识），可编辑、勾选确认后 plan | ✅ 2026-06-06（UI-B） |
 | O31 | **深度模式 / 多图 Vision 二次确认** | 长报告 + deep + vision 成本高，run 前提示 | 中 |
 | O32 | **`run_java_project` 工具** | ReAct/Executor 多文件 Java 编译（package 目录树），减少 fix_code 循环 | 中 |

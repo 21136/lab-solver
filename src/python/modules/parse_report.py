@@ -1,8 +1,10 @@
 """Word / PDF report parsing."""
 
+import re
 from pathlib import Path
 
 from config import DOCX_OK, PDF_OK
+from modules.code_cloze import detect_code_cloze
 
 if DOCX_OK:
     from docx import Document
@@ -257,6 +259,114 @@ def _detect_table_layout(doc) -> dict[str, object]:
     return {}
 
 
+_MONO_FONT_MARKERS = ("courier", "consolas", "monaco", "menlo", "lucida console", "dejavu sans mono")
+_CODE_CLOZE_BLANK_RE = re.compile(r"\(\s*\d+\s*\)|（\s*\d+\s*）")
+_CODE_SEGMENT_HINT_RE = re.compile(
+    r"\b(class|public|private|protected|extends|implements|interface|def|function|import|return)\b|//|/\*",
+    re.IGNORECASE,
+)
+
+
+def _iter_docx_body_blocks(doc):
+    """Yield Paragraph or Table elements in document body order."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    for child in doc.element.body:
+        tag = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+        if tag == "p":
+            yield Paragraph(child, doc)
+        elif tag == "tbl":
+            yield Table(child, doc)
+
+
+def _paragraph_is_monospace(para) -> bool:
+    style_name = (para.style.name if para.style else "") or ""
+    if "code" in style_name.lower() or "pre" in style_name.lower():
+        return True
+    for run in para.runs:
+        name = (run.font.name or "").lower()
+        if any(marker in name for marker in _MONO_FONT_MARKERS):
+            return True
+    return False
+
+
+def _table_has_monospace(table) -> bool:
+    for row in table.rows:
+        for cell in row.cells:
+            for para in cell.paragraphs:
+                if _paragraph_is_monospace(para):
+                    return True
+    return False
+
+
+def _table_cell_plain_text(table) -> str:
+    """Flatten table cells to plain lines (no DA1 bracket labels)."""
+    lines: list[str] = []
+    seen_cells: set[str] = set()
+    for row in table.rows:
+        for cell in row.cells:
+            cell_text = cell.text.strip()
+            if not cell_text or cell_text in seen_cells:
+                continue
+            seen_cells.add(cell_text)
+            for line in cell_text.splitlines():
+                stripped = line.strip()
+                if stripped:
+                    lines.append(stripped)
+    return "\n".join(lines)
+
+
+def _segment_looks_like_code_cloze(text: str) -> bool:
+    if not text:
+        return False
+    if detect_code_cloze(text).get("is_code_cloze"):
+        return True
+    return bool(_CODE_SEGMENT_HINT_RE.search(text) and _CODE_CLOZE_BLANK_RE.search(text))
+
+
+def extract_docx_code_cloze_text(doc) -> str:
+    """Collect code-like docx body segments for numbered-blank detection (R5 / Phase D)."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    segments: list[str] = []
+    for block in _iter_docx_body_blocks(doc):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if not text:
+                continue
+            if _paragraph_is_monospace(block) or _segment_looks_like_code_cloze(text):
+                segments.append(text)
+        elif isinstance(block, Table):
+            plain = _table_cell_plain_text(block)
+            if not plain:
+                continue
+            if _table_has_monospace(block) or _segment_looks_like_code_cloze(plain):
+                segments.append(plain)
+    return "\n\n".join(segments)
+
+
+def detect_code_cloze_for_docx(full_text: str, doc) -> dict:
+    """Detect code cloze from full docx text and extracted code segments."""
+    candidates = [full_text or ""]
+    code_text = extract_docx_code_cloze_text(doc)
+    if code_text and code_text not in candidates:
+        candidates.append(code_text)
+
+    best = detect_code_cloze("")
+    for text in candidates:
+        result = detect_code_cloze(text)
+        if result.get("is_code_cloze") and (
+            not best.get("is_code_cloze")
+            or result.get("blank_count", 0) > best.get("blank_count", 0)
+        ):
+            best = result
+        elif not best.get("is_code_cloze") and result.get("blank_count", 0) > best.get("blank_count", 0):
+            best = result
+    return best
+
+
 def extract_docx(path):
     """提取 Word 文档全文和封面表格元数据。"""
     metadata: dict[str, object] = {}
@@ -309,6 +419,13 @@ def extract_docx(path):
     image_result = extract_docx_images(path)
     metadata["image_assets"] = image_result.get("image_assets") or []
     metadata["image_bundle_meta"] = image_result.get("image_bundle_meta") or {}
+
+    cloze = detect_code_cloze_for_docx(full_text, doc)
+    if cloze.get("is_code_cloze"):
+        metadata["code_cloze"] = cloze
+        code_text = extract_docx_code_cloze_text(doc)
+        if code_text:
+            metadata["code_cloze_source"] = "docx_code_segments"
 
     return full_text, metadata
 
@@ -436,9 +553,15 @@ def build_question_from_document(
     question_metadata = {**metadata, "source_format": fmt}
     question_metadata.pop("image_assets", None)
     question_metadata.pop("image_bundle_meta", None)
+    q_type = "lab_report"
+    cloze = metadata.get("code_cloze") or detect_code_cloze(full_text)
+    if cloze.get("is_code_cloze"):
+        q_type = "code_cloze"
+        question_metadata["code_cloze"] = cloze
+
     question = {
         "id": 0,
-        "type": "lab_report",
+        "type": q_type,
         "title": metadata.get("experiment_title", title_base),
         "full_text": full_text,
         "metadata": question_metadata,
@@ -457,6 +580,239 @@ def build_question_from_document(
 def build_question_from_docx(path, file_name: str):
     """Backward-compatible alias for build_question_from_document."""
     return build_question_from_document(path, file_name)
+
+
+# --- O10 / R8: mixed assignment segment split (theory + code_cloze) ---
+
+_FILL_SECTION_MARKERS = ("实验步骤", "实验结果", "实验总结", "三、", "四、", "五、")
+
+_SEGMENT_HEADING_RES = (
+    re.compile(r"^[一二三四五六七八九十]+[、．.]\s*.+"),
+    re.compile(r"^第[一二三四五六七八九十\d]+题"),
+    re.compile(r"^(简答|填空|代码|编程|选择|判断)题"),
+)
+
+
+def _is_assignment_segment_heading(line: str) -> bool:
+    """Exam-style major heading; exclude code-cloze blank-only lines."""
+    stripped = (line or "").strip()
+    if not stripped or len(stripped) < 2:
+        return False
+    if _CODE_CLOZE_BLANK_RE.fullmatch(stripped.replace(" ", "")):
+        return False
+    if re.fullmatch(r"[\(（]\s*\d+\s*[\)）]", stripped):
+        return False
+    return any(pat.match(stripped) for pat in _SEGMENT_HEADING_RES)
+
+
+def _split_text_lines_to_segments(lines: list[str]) -> list[dict[str, str]]:
+    segments: list[dict[str, str]] = []
+    heading = ""
+    buf: list[str] = []
+
+    def flush() -> None:
+        nonlocal buf, heading
+        body = "\n".join(buf).strip()
+        if body:
+            segments.append({"heading": heading, "text": body})
+        buf = []
+
+    for line in lines:
+        if _is_assignment_segment_heading(line):
+            flush()
+            heading = line.strip()
+            continue
+        buf.append(line)
+    flush()
+    return segments
+
+
+def split_text_assignment_segments(text: str) -> list[dict[str, str]]:
+    """Split pasted/plain assignment into ordered segments by exam headings."""
+    body = (text or "").strip()
+    lines = [ln for ln in body.split("\n") if ln.strip()]
+    if not lines:
+        return []
+    segments = _split_text_lines_to_segments(lines)
+    if len(segments) > 1:
+        return segments
+    if detect_code_cloze(body).get("is_code_cloze"):
+        return [{"heading": "", "text": body}]
+    return _split_by_code_cloze_islands(body)
+
+
+def _line_in_code_island(line: str) -> bool:
+    stripped = (line or "").strip()
+    if not stripped:
+        return False
+    if _CODE_CLOZE_BLANK_RE.search(stripped):
+        return True
+    return bool(_CODE_SEGMENT_HINT_RE.search(stripped))
+
+
+def _split_by_code_cloze_islands(text: str) -> list[dict[str, str]]:
+    """Fallback: prose blocks vs code-cloze code blocks when no section headings."""
+    lines = [ln for ln in (text or "").split("\n") if ln.strip()]
+    if not lines:
+        return []
+    segments: list[dict[str, str]] = []
+    i = 0
+    while i < len(lines):
+        prose: list[str] = []
+        while i < len(lines) and not _line_in_code_island(lines[i]):
+            prose.append(lines[i])
+            i += 1
+        if prose:
+            segments.append({"heading": "", "text": "\n".join(prose)})
+
+        code: list[str] = []
+        while i < len(lines):
+            if not code and not _line_in_code_island(lines[i]):
+                break
+            if code and not _line_in_code_island(lines[i]) and not _CODE_CLOZE_BLANK_RE.search(
+                lines[i]
+            ):
+                if _segment_looks_like_code_cloze("\n".join(code)):
+                    break
+            code.append(lines[i])
+            i += 1
+        if code:
+            body = "\n".join(code)
+            if _segment_looks_like_code_cloze(body) or detect_code_cloze(body).get(
+                "is_code_cloze"
+            ):
+                segments.append({"heading": "", "text": body})
+            elif segments:
+                segments[-1]["text"] = segments[-1]["text"] + "\n" + body
+            else:
+                segments.append({"heading": "", "text": body})
+    return [s for s in segments if (s.get("text") or "").strip()]
+
+
+def split_docx_assignment_segments(doc) -> list[dict[str, str]]:
+    """Split docx body into assignment segments (paragraphs + code tables)."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    segments: list[dict[str, str]] = []
+    heading = ""
+    buf: list[str] = []
+
+    def flush() -> None:
+        nonlocal buf, heading
+        body = "\n".join(buf).strip()
+        if body:
+            segments.append({"heading": heading, "text": body})
+        buf = []
+
+    for block in _iter_docx_body_blocks(doc):
+        if isinstance(block, Paragraph):
+            text = block.text.strip()
+            if not text:
+                continue
+            if _is_assignment_segment_heading(text):
+                flush()
+                heading = text
+                continue
+            buf.append(text)
+        elif isinstance(block, Table):
+            plain = _table_cell_plain_text(block)
+            if not plain:
+                continue
+            if _table_has_monospace(block) or _segment_looks_like_code_cloze(plain):
+                flush()
+                segments.append({"heading": heading or "代码填空", "text": plain})
+                heading = ""
+            else:
+                for line in plain.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        buf.append(stripped)
+    flush()
+    if len(segments) <= 1:
+        full = "\n\n".join(s["text"] for s in segments)
+        return split_text_assignment_segments(full)
+    return segments
+
+
+def classify_assignment_segment(text: str) -> tuple[str, dict[str, object]]:
+    """Return question type + segment metadata."""
+    body = (text or "").strip()
+    if not body:
+        return "theory", {}
+    cloze = detect_code_cloze(body)
+    if cloze.get("is_code_cloze"):
+        return "code_cloze", {"code_cloze": cloze}
+    if any(m in body for m in _FILL_SECTION_MARKERS):
+        return "lab_report", {}
+    return "theory", {}
+
+
+def build_questions_from_segments(
+    segments: list[dict[str, str]],
+    *,
+    title_base: str = "",
+) -> list[dict[str, object]]:
+    questions: list[dict[str, object]] = []
+    for i, seg in enumerate(segments):
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        q_type, seg_meta = classify_assignment_segment(text)
+        heading = (seg.get("heading") or "").strip()
+        if heading and len(heading) <= 80:
+            title = heading
+        elif title_base:
+            title = f"{title_base} · 第 {len(questions) + 1} 题"
+        else:
+            title = f"题目 {len(questions) + 1}"
+        qmeta: dict[str, object] = {
+            "segment_index": len(questions),
+            "segment_heading": heading,
+        }
+        qmeta.update(seg_meta)
+        questions.append(
+            {
+                "id": len(questions),
+                "type": q_type,
+                "title": title,
+                "full_text": text,
+                "content": text[:200],
+                "metadata": qmeta,
+                "placeholder": "",
+                "image_assets": [],
+                "image_bundle_meta": {},
+            }
+        )
+    return questions
+
+
+_MIN_THEORY_SEGMENT_CHARS = 80
+
+
+def should_use_mixed_assignment(questions: list[dict]) -> bool:
+    """True when substantial theory text coexists with at least one code_cloze segment."""
+    if len(questions) < 2:
+        return False
+    cloze = [q for q in questions if q.get("type") == "code_cloze"]
+    if not cloze:
+        return False
+    theory_text = "\n\n".join(
+        (q.get("full_text") or "").strip()
+        for q in questions
+        if q.get("type") == "theory"
+    ).strip()
+    return len(theory_text) >= _MIN_THEORY_SEGMENT_CHARS
+
+
+def format_mixed_assignment_text(questions: list[dict]) -> str:
+    parts: list[str] = []
+    for q in questions:
+        title = (q.get("title") or f"题目 {int(q.get('id', 0)) + 1}").strip()
+        body = (q.get("full_text") or "").strip()
+        if body:
+            parts.append(f"【{title}】\n{body}")
+    return "\n\n".join(parts)
 
 
 def detect_docx_sections(path):

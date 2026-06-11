@@ -10,13 +10,79 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from config import TEMP_DIR
+from config import DOCX_OK, TEMP_DIR
 from log_util import logi
+from modules.code_cloze import detect_code_cloze
+
+_SHORT_ANSWER_LAB_KEYWORDS = (
+    "代码",
+    "程序",
+    "实验步骤",
+    "运行结果",
+    "实验报告",
+    "实验目的",
+    "实验内容",
+)
+_SHORT_ANSWER_NUMBERED_RE = re.compile(
+    r"(?:^|\n)\s*(?:[一二三四五六七八九十]+[、.．]|(?:\d+[.、．]\s))"
+)
+_SHORT_ANSWER_CODE_HINT_RE = re.compile(
+    r"```|\b(class|public\s+static|def\s+\w+|#include\b)",
+    re.IGNORECASE,
+)
+
+
+def detect_short_answer(text: str, *, metadata: dict | None = None) -> bool:
+    """Score-based detector for pure short-answer papers (non-mixed, non-cloze)."""
+    body = (text or "").strip()
+    if len(body) < 40:
+        return False
+    score = 0
+    has_numbered = bool(_SHORT_ANSWER_NUMBERED_RE.search(body))
+    has_code_hint = bool(_SHORT_ANSWER_CODE_HINT_RE.search(body))
+    if has_numbered and not has_code_hint:
+        score += 3
+    if not any(kw in body for kw in _SHORT_ANSWER_LAB_KEYWORDS):
+        score += 2
+    meta = metadata or {}
+    if meta.get("inline_paste") or meta.get("source_format") == "text":
+        score += 1
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+    if len(body) < 800 and len(paragraphs) >= 3:
+        score += 1
+    return score >= 4
+
+
+def _apply_short_answer_type(bundle: dict[str, Any]) -> bool:
+    """Mark bundle as short_answer when heuristics match."""
+    meta = dict(bundle.get("metadata") or {})
+    if meta.get("mixed_assignment"):
+        return False
+    cloze = meta.get("code_cloze") or {}
+    if cloze.get("is_code_cloze"):
+        return False
+    if (meta.get("question_type") or "").strip().lower() == "code_cloze":
+        return False
+    full_text = (bundle.get("assignment_text") or bundle.get("full_text") or "").strip()
+    if not detect_short_answer(full_text, metadata=meta):
+        return False
+    meta["question_type"] = "short_answer"
+    bundle["metadata"] = meta
+    question = dict(bundle.get("question") or {})
+    question["type"] = "short_answer"
+    bundle["question"] = question
+    logi("parse_documents", "short_answer detected")
+    return True
 from modules.fill_report import SECTION_HEADER_PATTERNS
 from modules.parse_report import (
     build_question_from_document,
+    build_questions_from_segments,
     document_format,
     extract_document_paragraphs,
+    format_mixed_assignment_text,
+    should_use_mixed_assignment,
+    split_docx_assignment_segments,
+    split_text_assignment_segments,
 )
 
 VALID_ROLES = frozenset(
@@ -211,9 +277,15 @@ def parse_inline_text(
         "layout": layout,
         "inline_paste": True,
     }
+    q_type = "lab_report"
+    cloze = detect_code_cloze(full_text)
+    if layout == "assignment_only" and cloze.get("is_code_cloze"):
+        q_type = "code_cloze"
+        metadata["code_cloze"] = cloze
+
     question = {
         "id": 0,
-        "type": "lab_report",
+        "type": q_type,
         "title": title_base,
         "full_text": full_text,
         "metadata": dict(metadata),
@@ -237,7 +309,7 @@ def parse_inline_text(
         layout=layout,
     )
 
-    return {
+    bundle: dict[str, Any] = {
         "document_id": doc_id,
         "id": doc_id,
         "role": resolved_role,
@@ -247,7 +319,7 @@ def parse_inline_text(
         "report_text": report_text,
         "planner_input_text": planner_input_text,
         "full_text": full_text,
-        "assignment_text": assignment_text,
+        "assignment_text": assignment_text or full_text,
         "fill_body_text": fill_body_text,
         "metadata": metadata,
         "question": question,
@@ -260,6 +332,10 @@ def parse_inline_text(
         "table_map": [],
         "created_at": __import__("time").time(),
     }
+    if layout == "assignment_only":
+        if not _apply_mixed_assignment_split(bundle):
+            _apply_short_answer_type(bundle)
+    return bundle
 
 
 def _apply_ocr_to_assignment_text(assignment_text: str, metadata: dict) -> str:
@@ -271,6 +347,82 @@ def _apply_ocr_to_assignment_text(assignment_text: str, metadata: dict) -> str:
     if base:
         return base + "\n\n" + ocr_merged
     return ocr_merged
+
+
+def _assignment_segments_for_bundle(bundle: dict[str, Any]) -> list[dict[str, str]]:
+    """Collect raw segments from docx body or plain text."""
+    layout = bundle.get("layout") or ""
+    role = bundle.get("role") or ""
+    if layout != "assignment_only" and role == "fill_target":
+        return []
+    full_text = (bundle.get("full_text") or "").strip()
+    if not full_text:
+        return []
+    file_path = bundle.get("file_path") or ""
+    src = (bundle.get("metadata") or {}).get("source_format") or ""
+    if file_path and src in ("docx", "doc") and DOCX_OK:
+        try:
+            from docx import Document
+
+            doc = Document(str(file_path))
+            return split_docx_assignment_segments(doc)
+        except Exception:
+            pass
+    return split_text_assignment_segments(full_text)
+
+
+def _apply_mixed_assignment_split(bundle: dict[str, Any]) -> bool:
+    """O10/R8: split theory + code_cloze in one assignment; False if not mixed."""
+    if bundle.get("fill_target"):
+        return False
+    layout = bundle.get("layout") or ""
+    if layout not in ("assignment_only", ""):
+        return False
+    segments = _assignment_segments_for_bundle(bundle)
+    if not segments:
+        return False
+    title_base = bundle.get("file_name", "题目").rsplit(".", 1)[0]
+    questions = build_questions_from_segments(segments, title_base=title_base)
+    if not should_use_mixed_assignment(questions):
+        return False
+
+    combined = format_mixed_assignment_text(questions)
+    bundle["questions"] = questions
+    bundle["question"] = dict(questions[0])
+    bundle["assignment_text"] = combined
+    bundle["planner_input_text"] = build_planner_input_text(
+        assignment_text=combined,
+        fill_body_text="",
+        layout="assignment_only",
+    )
+    metadata = dict(bundle.get("metadata") or {})
+    metadata["mixed_assignment"] = True
+    metadata["assignment_questions"] = [
+        {
+            "id": q["id"],
+            "type": q["type"],
+            "title": q.get("title"),
+            "full_text": q.get("full_text"),
+            "metadata": q.get("metadata") or {},
+        }
+        for q in questions
+    ]
+    metadata["question_type"] = "mixed_assignment"
+    metadata["question_count"] = len(questions)
+    metadata.pop("code_cloze", None)
+    bundle["metadata"] = metadata
+    if isinstance(bundle.get("question"), dict):
+        q0 = dict(bundle["question"])
+        qmeta = dict(q0.get("metadata") or {})
+        qmeta.pop("code_cloze", None)
+        q0["metadata"] = qmeta
+        bundle["question"] = q0
+    logi(
+        "parse_documents",
+        f"mixed_assignment segments={len(questions)} types="
+        f"{sorted({q.get('type') for q in questions})}",
+    )
+    return True
 
 
 def _apply_user_upload_assignment_images(
@@ -387,9 +539,14 @@ def _build_user_upload_bundle(upload: dict[str, Any], assignment_text: str) -> d
         "image_read_summary": upload.get("image_read_summary"),
         "image_sections": upload.get("image_sections") or [],
     }
+    cloze = detect_code_cloze(assignment_text)
+    q_type = "code_cloze" if cloze.get("is_code_cloze") else "lab_report"
+    if q_type == "code_cloze":
+        metadata["code_cloze"] = cloze
+
     question = {
         "id": 0,
-        "type": "lab_report",
+        "type": q_type,
         "title": "题目图片组",
         "full_text": assignment_text,
         "metadata": {k: v for k, v in metadata.items() if k not in ("image_assets", "image_bundle_meta")},
@@ -601,7 +758,22 @@ def parse_single_file(
     )
 
     image_read_summary = metadata.get("image_read_summary")
-    return {
+    cloze_source = (assignment_text or "").strip()
+    if not cloze_source:
+        cloze_source = (full_text or "").strip()
+    cloze = metadata.get("code_cloze") or detect_code_cloze(cloze_source)
+    if not cloze.get("is_code_cloze"):
+        existing = ((question or {}).get("metadata") or {}).get("code_cloze")
+        if existing and existing.get("is_code_cloze"):
+            cloze = existing
+    if cloze.get("is_code_cloze"):
+        question = dict(question or {})
+        question["type"] = "code_cloze"
+        qmeta = dict(question.get("metadata") or {})
+        qmeta["code_cloze"] = cloze
+        question["metadata"] = qmeta
+        metadata["code_cloze"] = cloze
+    bundle: dict[str, Any] = {
         "document_id": doc_id,
         "id": doc_id,
         "role": resolved_role,
@@ -611,7 +783,7 @@ def parse_single_file(
         "report_text": report_text,
         "planner_input_text": planner_input_text,
         "full_text": full_text,
-        "assignment_text": assignment_text,
+        "assignment_text": assignment_text or full_text,
         "fill_body_text": fill_body_text,
         "metadata": metadata,
         "question": question,
@@ -628,6 +800,23 @@ def parse_single_file(
         "image_sections": metadata.get("image_sections") or [],
         "created_at": __import__("time").time(),
     }
+    if layout == "assignment_only" or (
+        resolved_role == "assignment" and not fill_body_text
+    ):
+        _apply_mixed_assignment_split(bundle)
+    return bundle
+
+
+def _questions_from_parse_result(result: dict[str, Any]) -> list[dict[str, Any]]:
+    if result.get("questions"):
+        return list(result["questions"])
+    q = result.get("question")
+    return [q] if q else []
+
+
+def _attach_questions_to_result(result: dict[str, Any]) -> dict[str, Any]:
+    result["questions"] = _questions_from_parse_result(result)
+    return result
 
 
 def parse_documents_list(
@@ -729,6 +918,7 @@ def parse_documents_list(
         if primary.get("assignment_text"):
             assignment_parts.insert(0, primary["assignment_text"])
         assignment_text = "\n\n".join(assignment_parts)
+        cloze = detect_code_cloze(assignment_text)
 
         # Separate assignment file overrides combined split assignment half
         if assignments and primary.get("layout") == "combined":
@@ -825,15 +1015,33 @@ def parse_documents_list(
             "image_sections": primary.get("image_sections") or [],
             "_bundles": parsed_docs,
         }
-        return _apply_user_upload_assignment_images(
-            result,
-            assignment_images or [],
-            enable_image_ocr=enable_image_ocr,
-            ocr_lang=ocr_lang,
-            ocr_max_pages=ocr_max_pages,
-            image_reading_mode=image_reading_mode,
-            vision_max_pages=vision_max_pages,
-            llm_settings=llm_settings,
+        meta = result.get("metadata") or {}
+        if not meta.get("mixed_assignment") and cloze.get("is_code_cloze"):
+            result["question"] = dict(result.get("question") or {})
+            result["question"]["type"] = "code_cloze"
+            qmeta = dict((result["question"].get("metadata") or {}))
+            qmeta["code_cloze"] = cloze
+            result["question"]["metadata"] = qmeta
+            result["metadata"] = dict(result.get("metadata") or {})
+            result["metadata"]["code_cloze"] = cloze
+        elif not meta.get("mixed_assignment") and not cloze.get("is_code_cloze"):
+            assign = assignment_text or primary.get("full_text") or ""
+            if detect_short_answer(assign, metadata=meta):
+                result["question"] = dict(result.get("question") or {})
+                result["question"]["type"] = "short_answer"
+                result["metadata"] = dict(result.get("metadata") or {})
+                result["metadata"]["question_type"] = "short_answer"
+        return _attach_questions_to_result(
+            _apply_user_upload_assignment_images(
+                result,
+                assignment_images or [],
+                enable_image_ocr=enable_image_ocr,
+                ocr_lang=ocr_lang,
+                ocr_max_pages=ocr_max_pages,
+                image_reading_mode=image_reading_mode,
+                vision_max_pages=vision_max_pages,
+                llm_settings=llm_settings,
+            )
         )
 
     # No fill_target — assignment-only documents, answers go to new doc or UI only
@@ -843,11 +1051,19 @@ def parse_documents_list(
     primary = parsed_docs[0]
     document_ids = [d["document_id"] for d in parsed_docs]
     assignment_text = "\n\n".join([t for t in assignments if t.strip()])
-    planner_input = build_planner_input_text(
-        assignment_text=assignment_text,
-        fill_body_text=primary.get("fill_body_text") or primary.get("report_text") or "",
-        reference_excerpts=references,
-        layout="assignment_only",
+    primary_meta = primary.get("metadata") or {}
+    if primary_meta.get("mixed_assignment"):
+        assignment_text = primary.get("assignment_text") or assignment_text
+    cloze = detect_code_cloze(assignment_text or primary.get("full_text") or "")
+    planner_input = (
+        primary.get("planner_input_text")
+        if primary_meta.get("mixed_assignment")
+        else build_planner_input_text(
+            assignment_text=assignment_text,
+            fill_body_text=primary.get("fill_body_text") or primary.get("report_text") or "",
+            reference_excerpts=references,
+            layout="assignment_only",
+        )
     )
     logi(
         "parse_documents",
@@ -876,6 +1092,7 @@ def parse_documents_list(
         "report_text": primary["report_text"],
         "metadata": primary["metadata"],
         "question": primary["question"],
+        "questions": primary.get("questions"),
         "warnings": all_warnings,
         "needs_uml": primary.get("needs_uml", False),
         "split_idx": None,
@@ -892,13 +1109,31 @@ def parse_documents_list(
         "image_sections": primary.get("image_sections") or [],
         "_bundles": parsed_docs,
     }
-    return _apply_user_upload_assignment_images(
-        result,
-        assignment_images or [],
-        enable_image_ocr=enable_image_ocr,
-        ocr_lang=ocr_lang,
-        ocr_max_pages=ocr_max_pages,
-        image_reading_mode=image_reading_mode,
-        vision_max_pages=vision_max_pages,
-        llm_settings=llm_settings,
+    meta = result.get("metadata") or {}
+    if not meta.get("mixed_assignment") and cloze.get("is_code_cloze"):
+        result["question"] = dict(result.get("question") or {})
+        result["question"]["type"] = "code_cloze"
+        qmeta = dict((result["question"].get("metadata") or {}))
+        qmeta["code_cloze"] = cloze
+        result["question"]["metadata"] = qmeta
+        result["metadata"] = dict(result.get("metadata") or {})
+        result["metadata"]["code_cloze"] = cloze
+    elif not meta.get("mixed_assignment") and not cloze.get("is_code_cloze"):
+        assign = assignment_text or primary.get("full_text") or ""
+        if detect_short_answer(assign, metadata=meta):
+            result["question"] = dict(result.get("question") or {})
+            result["question"]["type"] = "short_answer"
+            result["metadata"] = dict(result.get("metadata") or {})
+            result["metadata"]["question_type"] = "short_answer"
+    return _attach_questions_to_result(
+        _apply_user_upload_assignment_images(
+            result,
+            assignment_images or [],
+            enable_image_ocr=enable_image_ocr,
+            ocr_lang=ocr_lang,
+            ocr_max_pages=ocr_max_pages,
+            image_reading_mode=image_reading_mode,
+            vision_max_pages=vision_max_pages,
+            llm_settings=llm_settings,
+        )
     )

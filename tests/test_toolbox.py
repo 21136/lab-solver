@@ -165,6 +165,21 @@ class TestToolParse:
 
 # ── 2. Solve ──
 
+SAMPLE_CLOZE_TEXT = """
+public class MainControllerCenter {
+    ( 1 ) MainControllerCenter instance;
+    private ( 2 ) MainControllerCenter() {}
+    public static MainControllerCenter getInstance() {
+        if (instance == null) {
+            instance = ( 3 ) MainControllerCenter();
+        }
+        return instance;
+    }
+}
+""".strip()
+
+LAB_REPORT_TEXT = "实验一 Java多线程程序设计\n一、实验目的\n1. 掌握线程创建"
+
 
 class TestToolSolve:
     @pytest.fixture(autouse=True)
@@ -203,17 +218,76 @@ class TestToolSolve:
         }
         resp = self.client.post("/api/tool/solve", json={
             "api_key": "sk-test",
-            "text": "实验一 Java多线程",
+            "text": LAB_REPORT_TEXT,
             "language": "java",
             "include_uml": True,
         })
         data = resp.get_json()
         assert resp.status_code == 200
         assert data["ok"] is True
+        assert data["data"]["type"] == "lab_report"
         assert data["data"]["code"] == "public class Main {}"
         assert data["data"]["language"] == "java"
         assert len(data["data"]["diagrams"]) == 1
         assert data["data"]["tokens"] == 1234
+        mock_solve.assert_called_once()
+
+    @patch("server.call_ai")
+    @patch("server.solve_lab")
+    def test_code_cloze_branch(self, mock_solve, mock_call_ai):
+        mock_call_ai.return_value = {
+            "answer": '{"type":"code_cloze","blanks":{"1":{"answer":"static","brief":"类变量"}}}',
+            "type": "code_cloze",
+            "language": "java",
+            "parsed": {
+                "type": "code_cloze",
+                "blanks": {
+                    "1": {"answer": "static", "brief": "类变量"},
+                    "2": {"answer": "private", "brief": "构造器私有"},
+                    "3": {"answer": "new", "brief": "懒汉式实例化"},
+                },
+                "completed_code": "public class MainControllerCenter { ... }",
+                "pattern_note": "Singleton 单例模式",
+            },
+        }
+        resp = self.client.post("/api/tool/solve", json={
+            "api_key": "sk-test",
+            "text": SAMPLE_CLOZE_TEXT,
+            "language": "java",
+        })
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert data["data"]["type"] == "code_cloze"
+        assert data["data"]["blanks"]["1"]["answer"] == "static"
+        assert data["data"]["parsed"]["blanks"]["3"]["answer"] == "new"
+        assert data["data"]["pattern_note"] == "Singleton 单例模式"
+        assert data["data"]["code_cloze_detected"]["is_code_cloze"] is True
+        assert data["data"]["code_cloze_detected"]["blank_count"] >= 2
+        mock_call_ai.assert_called_once()
+        mock_solve.assert_not_called()
+        call_question = mock_call_ai.call_args[0][3]
+        assert call_question["type"] == "code_cloze"
+        assert call_question["metadata"]["code_cloze"]["is_code_cloze"] is True
+
+    @patch("server.call_ai")
+    @patch("server.solve_lab")
+    def test_lab_report_does_not_call_code_cloze(self, mock_solve, mock_call_ai):
+        mock_solve.return_value = {
+            "answer": "完整答案...",
+            "parsed": {"steps_analysis": "步骤...", "code": "x=1"},
+            "language": "python",
+        }
+        resp = self.client.post("/api/tool/solve", json={
+            "api_key": "sk-test",
+            "text": LAB_REPORT_TEXT,
+        })
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["ok"] is True
+        assert data["data"]["type"] == "lab_report"
+        mock_solve.assert_called_once()
+        mock_call_ai.assert_not_called()
 
     @patch("server.solve_lab", side_effect=RuntimeError("LLM timeout"))
     def test_solve_handles_exception(self, _mock_solve):

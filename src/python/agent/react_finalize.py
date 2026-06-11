@@ -48,7 +48,7 @@ def execute_finalize_report(ctx: dict, params: dict | None = None) -> dict[str, 
         err = fill_err.get("error", "")
         if err:
             summary += f" — {err}"
-    solve_ok = _module_done(ctx, "solve_lab")
+    solve_ok = _module_done(ctx, "solve_lab") or _module_done(ctx, "solve_code_cloze")
     out = {"ok": solve_ok or fill_ok, "result_summary": summary, "data": {"cycles": len(cycles)}, "module": "finalize_report"}
     ctx.setdefault("module_results", {})["finalize_report"] = {"ok": out["ok"], "data": out["data"]}
     return out

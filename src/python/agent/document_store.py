@@ -70,6 +70,13 @@ def store_from_text(
 ) -> tuple[str, dict[str, Any]]:
     doc_id = str(uuid.uuid4())
     text = (report_text or "").strip()
+    from modules.code_cloze import detect_code_cloze
+
+    cloze = detect_code_cloze(text)
+    q_type = "code_cloze" if cloze.get("is_code_cloze") else "lab_report"
+    md = dict(metadata or {})
+    if q_type == "code_cloze":
+        md["code_cloze"] = cloze
     bundle = {
         "document_id": doc_id,
         "role": "fill_target",
@@ -81,9 +88,9 @@ def store_from_text(
         "full_text": text,
         "fill_body_text": text,
         "assignment_text": "",
-        "metadata": metadata or {},
+        "metadata": md,
         "question": question
-        or {"type": "lab_report", "content": text, "full_text": text},
+        or {"type": q_type, "content": text, "full_text": text, "metadata": md},
         "warnings": [],
         "needs_uml": False,
         "split_idx": None,

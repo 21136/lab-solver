@@ -46,8 +46,31 @@ def _build_registry() -> dict[str, ModuleSpec]:
             runner="executor",
         ),
         ModuleSpec(
+            id="solve_code_cloze",
+            description="解答代码完形填空（按空号输出结构化答案）",
+            planner_visible=True,
+            react_alias="solve_code_cloze",
+            react_description=(
+                "解答代码完形填空题：按题面编号空位输出 blanks JSON，"
+                "可选 completed_code / pattern_note。"
+                "参数 language 指定语言（java/python 等）。"
+                "本题是编号填空时不要调用 solve_lab 或 run_code。"
+            ),
+            react_params=("language",),
+            runner="executor",
+        ),
+        ModuleSpec(
             id="solve_theory",
             description="解答理论/简答题",
+            planner_visible=True,
+            react_alias=None,
+            react_description=None,
+            react_params=(),
+            runner="executor",
+        ),
+        ModuleSpec(
+            id="solve_short_answer",
+            description="解答纯简答题卷",
             planner_visible=True,
             react_alias=None,
             react_description=None,
@@ -107,8 +130,9 @@ def _build_registry() -> dict[str, ModuleSpec]:
             planner_visible=True,
             react_alias="present_deliverable",
             react_description=(
-                "汇编答案交付物（默认终点）。将 solve_lab 结果整理为分节内容、代码、图表，"
-                "供用户在答案工作区复制。须先完成 solve_lab。无需参数。"
+                "汇编答案交付物（默认终点）。将 solve_lab 或 solve_code_cloze 结果整理为"
+                "分节内容、空号列表或代码、图表，供用户在答案工作区复制。"
+                "须先完成解题步骤。无需参数。"
             ),
             react_params=(),
             runner="executor",
@@ -207,7 +231,13 @@ def react_tool_schemas() -> dict[str, dict[str, Any]]:
 
 def react_action_to_module(action: str) -> str:
     """Map a ReAct action name to an executor module id."""
-    return _REACT_ALIAS_INDEX.get((action or "").strip().lower(), "")
+    key = (action or "").strip().lower()
+    aliased = _REACT_ALIAS_INDEX.get(key, "")
+    if aliased:
+        return aliased
+    if key in MODULE_REGISTRY:
+        return key
+    return ""
 
 
 def get_runner(module_id: str) -> Callable[..., Any] | None:

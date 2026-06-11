@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from agent.orchestrator import RunOrchestrator, RunStepsOptions, orchestrator_enabled
+from agent.orchestrator import RunOrchestrator, RunStepsOptions
 
 
 @pytest.fixture(autouse=True)
@@ -20,11 +20,6 @@ def _collect_emit():
         events.append(ev)
 
     return events, emit
-
-
-def test_orchestrator_enabled_default():
-    assert orchestrator_enabled({}) is True
-    assert orchestrator_enabled({"use_orchestrator": False}) is False
 
 
 def test_run_steps_progress_order():
@@ -169,3 +164,32 @@ def test_deep_tail_options_exclude_solve_lab():
 
     assert ran == ["run_code"]
     assert "solve_lab" not in completed or completed == ["solve_lab", "run_code"]
+
+
+def test_ir1_execute_standard_run_delegates_to_orchestrator():
+    """IR-1: standard mode has no legacy loop — only RunOrchestrator path."""
+    from agent.executor import execute_standard_run
+
+    ctx = {
+        "run_id": "ir1-std",
+        "module_results": {},
+        "consecutive_failures": 0,
+        "replan_rounds": 0,
+        "plan": {"steps": []},
+        "decision_log": [],
+        "document_ids": [],
+        "report_text": "实验",
+        "settings": {},
+    }
+    steps = [{"module": "solve_lab", "params": {}, "default_checked": True}]
+
+    with patch("agent.orchestrator.RunOrchestrator") as mock_orch_cls:
+        orch = mock_orch_cls.return_value
+        orch.run_steps.return_value = (["solve_lab"], False)
+        with patch("agent.run_result.complete_agent_run", return_value={"ok": True, "run_id": "ir1-std"}):
+            with patch("agent.executor.emit_event"):
+                result = execute_standard_run("ir1-std", ctx, steps, use_fallback=False)
+
+    mock_orch_cls.assert_called_once()
+    orch.run_steps.assert_called_once()
+    assert result.get("ok") is True

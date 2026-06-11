@@ -18,6 +18,7 @@ def test_build_run_summary_fields():
         "run_mode": "standard",
         "settings": {"solveQualityTier": "thorough"},
         "pipeline_meta": {"version": "v4", "code_status": "verified"},
+        "prompt_versions": {"planner": "1.4.0", "code_only": "1.0.0"},
         "verification_report": {"passed": True},
         "skills_fired": ["java-no-servlet"],
         "finalize_ran": True,
@@ -30,13 +31,19 @@ def test_build_run_summary_fields():
     orch.replan_count = 2
 
     with patch("llm_client.get_llm_call_count", return_value=5):
-        summary = orch.build_run_summary()
+        with patch(
+            "llm_client.get_llm_calls_by_phase",
+            return_value={"planner": 2, "solve_code": 3},
+        ):
+            summary = orch.build_run_summary()
 
     assert summary["mode"] == "standard"
     assert summary["solve_quality_tier"] == "thorough"
     assert summary["pipeline_version"] == "v4"
     assert summary["code_status"] == "verified"
     assert summary["llm_calls"] == 5
+    assert summary["llm_calls_by_phase"] == {"planner": 2, "solve_code": 3}
+    assert summary["prompt_versions"] == {"planner": "1.4.0", "code_only": "1.0.0"}
     assert summary["replan_count"] == 2
     assert summary["verify_pass"] is True
     assert summary["auto_remediate_rounds"] == 1
@@ -84,14 +91,13 @@ def test_standard_run_done_includes_run_summary():
     with patch("agent.executor.emit_event", side_effect=lambda _rid, ev: events.append(ev)):
         with patch("agent.executor.release_run"):
             with patch("agent.executor.clear_run_temp"):
-                with patch("agent.executor.fallback_to_solve"):
-                    with patch.dict(
-                        "agent.executor._MODULE_RUNNERS",
-                        {"fill_report": lambda c, p: {"ok": True, "data": {"output_path": "/x.docx"}}},
-                        clear=False,
-                    ):
-                        with patch("agent.quality.verify_answer", return_value={"passed": True}):
-                            _execute_standard_via_orchestrator("std-rs", ctx, steps, use_fallback=False)
+                with patch.dict(
+                    "agent.executor._MODULE_RUNNERS",
+                    {"fill_report": lambda c, p: {"ok": True, "data": {"output_path": "/x.docx"}}},
+                    clear=False,
+                ):
+                    with patch("agent.quality.verify_answer", return_value={"passed": True}):
+                        _execute_standard_via_orchestrator("std-rs", ctx, steps, use_fallback=False)
 
     done = next(e for e in events if e.get("type") == "done")
     assert "run_summary" in done

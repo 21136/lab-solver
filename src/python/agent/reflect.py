@@ -52,6 +52,9 @@ def run_reflect(
         fill_scope=json.dumps(ctx.get("fill_scope") or {}, ensure_ascii=False)[:800],
     )
 
+    from agent.prompts import record_prompt_version
+
+    record_prompt_version(ctx, "reflect")
     model = select_model_for_run_mode(settings, "deep")
     try:
         result = chat(

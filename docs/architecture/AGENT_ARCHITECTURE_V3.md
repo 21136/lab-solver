@@ -55,7 +55,7 @@ def start_run_async(..., run_mode: str = "standard"):
 |------|------|
 | **G1 编排收敛** | 抽出 `RunOrchestrator`，三模式共享 module 执行 + verify + finalize |
 | **G2 注册表单源** | `agent/registry.py` 驱动 Planner catalog、ReAct tools（✅ V3-1；Executor dispatch 待 V3-2） |
-| **G3 质量闭环** | 可选 `auto_remediate`：verify → dirty → 局部重跑 → 再 verify（默认关） |
+| **G3 质量闭环** | `auto_remediate`：verify → dirty → 局部重跑 → 再 verify（**2026-06-08**：standard/deep 默认开，设置可关） |
 | **G4 ReAct 现代化** | 统一 `llm_client` + JSON/function calling；读题走 `prompt_budget`（✅ V3-1 读题+LLM；JSON/tools 待 V3-3） |
 | **G5 计划对齐** | ReAct system prompt 注入 plan checklist；未完成项优先补跑 |
 | **G6 行为 + 技能** | C2 轻量统计 + skill 候选队列（半自动 promote） |
@@ -264,7 +264,7 @@ MODULE_REGISTRY: dict[str, ModuleSpec] = {...}
 
 **触发条件**（全部满足才执行）：
 
-- `ctx.get("auto_remediate") is True`（用户设置或 deep 模式默认，standard 默认 False）
+- `ctx.get("auto_remediate") is True`（**2026-06-08**：standard/deep 默认 True；设置 `autoRemediate: false` 或 API 显式 `false` 可关）
 - `verification.passed is False`
 - `suggested_actions` 非空
 - 未超过 `max_remediate_rounds`（默认 **1**）
@@ -297,9 +297,9 @@ verify_answer(ctx)
 
 | 入口 | 字段 | 默认 |
 |------|------|------|
-| `POST /api/agent/run` body | `auto_remediate?: boolean` | false |
-| `run_mode=deep` | 可默认 true | 待 UI 确认 |
-| 设置页 | 「校验未通过时自动修复一次（消耗 Token）」 | off |
+| `POST /api/agent/run` body | `auto_remediate?: boolean` | 未传时 **standard/deep 为 true** |
+| `run_mode=standard` / `deep` | 前端默认传 `auto_remediate: true` | ✅ 2026-06-08 |
+| 设置页 | 「校验未通过时自动修复一次（消耗 Token）」 | **默认 on**（schema v7 迁移） |
 
 ---
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import threading
 from typing import Any, Callable, Optional
 
+from agent.cloze_run import is_code_cloze_run, is_mixed_assignment_run
 from agent.decision_log import append_decision
 from agent.reflect import run_reflect
 from agent.run_control import emit_event, is_cancelled, map_api_error, release_run
@@ -167,8 +168,6 @@ def execute_deep_run(
     Deep pipeline with verify before final done event.
     Reimplements tail by inlining execute after pre-reflect phases.
     """
-    from agent.planner import MAX_CONSECUTIVE_FAILURES
-
     emit = lambda ev: emit_event(run_id, ev)
     ctx["run_id"] = run_id
     understand = ctx.get("understand") or {}
@@ -191,11 +190,21 @@ def execute_deep_run(
     if understand.get("summary"):
         _emit_thought(emit, "understand", str(understand.get("summary", ""))[:2000])
 
-    solve_step = next(
-        (s for s in steps if s.get("module") == "solve_lab"),
-        {"module": "solve_lab", "params": {}, "default_checked": True},
-    )
-    if solve_step.get("default_checked", True):
+    mixed_assignment = is_mixed_assignment_run(ctx, steps)
+    code_cloze = is_code_cloze_run(ctx, steps)
+    solve_step = next((s for s in steps if s.get("module") == "solve_lab"), None)
+    if solve_step is None and not code_cloze and not mixed_assignment:
+        solve_step = {"module": "solve_lab", "params": {}, "default_checked": True}
+    if mixed_assignment or code_cloze:
+        append_decision(
+            ctx,
+            agent="deep_pipeline",
+            decision="skip_solve_lab_draft",
+            target="solve_code_cloze",
+            reason="code_cloze/mixed plan: no solve_lab draft/reflect",
+            emit=on_decision,
+        )
+    elif solve_step and solve_step.get("default_checked", True):
         emit({"type": "progress", "module": "solve_lab", "phase": "draft", "status": "running"})
         draft_result = _run_draft(ctx, solve_step.get("params") or {})
         ctx.setdefault("module_results", {})["solve_lab"] = draft_result
@@ -348,6 +357,7 @@ def start_deep_run_async(
             release_run(run_id, "error")
             emit_event(run_id, {"type": "done", "ok": False, "error": mapped["error"]})
 
-    t = threading.Thread(target=_target, daemon=True)
+    short_id = (run_id or "unknown")[:8]
+    t = threading.Thread(target=_target, daemon=True, name=f"agent-run-{short_id}")
     t.start()
     return t

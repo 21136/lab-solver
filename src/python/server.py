@@ -29,7 +29,7 @@ from llm_client import call_ai
 from modules.fill_report import do_fill
 from modules.fix_code import fix_code_from_error
 from modules.parse_report import build_question_from_document, detect_docx_sections, document_format
-from settings_schema import SETTINGS_SCHEMA_VERSION
+from settings_schema import SETTINGS_DEFAULTS, SETTINGS_SCHEMA_VERSION
 
 
 def _solve_quality_tier_from_request(data: dict) -> str:
@@ -37,6 +37,37 @@ def _solve_quality_tier_from_request(data: dict) -> str:
         data.get("solveQualityTier") or data.get("solve_quality_tier") or "standard"
     ).strip().lower()
     return tier if tier in ("fast", "standard", "thorough") else "standard"
+
+
+def _solve_quality_tier_explicit_from_request(data: dict) -> bool:
+    if "solveQualityTierExplicit" in data:
+        return bool(data.get("solveQualityTierExplicit"))
+    if "solve_quality_tier_explicit" in data:
+        return bool(data.get("solve_quality_tier_explicit"))
+    return False
+
+
+def _auto_fast_tier_from_request(data: dict) -> bool:
+    if "autoFastTierForLightQuestions" in data:
+        return bool(data.get("autoFastTierForLightQuestions"))
+    if "auto_fast_tier_for_light_questions" in data:
+        return bool(data.get("auto_fast_tier_for_light_questions"))
+    return True
+
+
+def _enable_parallel_steps_from_request(data: dict) -> bool:
+    if "enableParallelModuleSteps" in data:
+        return bool(data.get("enableParallelModuleSteps"))
+    if "enable_parallel_module_steps" in data:
+        return bool(data.get("enable_parallel_module_steps"))
+    return True
+
+
+def _apply_solve_quality_settings(settings: dict, data: dict) -> None:
+    settings["solveQualityTier"] = _solve_quality_tier_from_request(data)
+    settings["solveQualityTierExplicit"] = _solve_quality_tier_explicit_from_request(data)
+    settings["autoFastTierForLightQuestions"] = _auto_fast_tier_from_request(data)
+    settings["enableParallelModuleSteps"] = _enable_parallel_steps_from_request(data)
 
 
 def _llm_settings_from_request(data: dict) -> tuple[dict | None, str | None]:
@@ -65,31 +96,134 @@ from modules.revise_answer import revise_answer
 from agent.parse_documents import parse_documents_list
 from agent.plan_feedback import record_plan_feedback
 from agent.planner import (
+    apply_question_type_overrides,
     compute_plan_fingerprint,
     make_agent_context,
     plan_from_report,
     replan_with_answers,
     verify_plan_fingerprint,
 )
+from modules.code_cloze import detect_code_cloze
 from agent.sections_config import normalize as normalize_sections_config
 from agent.sections_config import parse_section_brief
 from agent.run_control import (
     RunBusyError,
-    acquire_run,
+    RunQueueFullError,
     cancel_run,
+    configure_run_events,
     get_active_run_id,
     get_run,
     get_run_events,
     iter_events,
     map_api_error,
+    register_run_starter,
     release_run,
     respond_jar_consent,
+    run_exists,
+    try_acquire_or_queue,
 )
 from agent.user_profile import load_profile, merge_profile, normalize_profile, save_profile, record_revise_tags
 from agent.template_analyzer import prepare_format_spec_for_session
 from modules.parse_answer_template import parse_answer_template
 
 app = Flask(__name__)
+
+
+def _normalize_user_constraints_input(data: dict) -> list[str]:
+    from modules.user_constraints import normalize_user_constraints
+
+    return normalize_user_constraints(
+        data.get("user_constraints") or data.get("userConstraints")
+    )
+
+
+def _auto_remediate_max_rounds_from_request(data: dict) -> int:
+    raw = (
+        data.get("auto_remediate_max_rounds")
+        if "auto_remediate_max_rounds" in data
+        else data.get("autoRemediateMaxRounds")
+    )
+    if raw is None:
+        return 1
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(0, min(5, val))
+
+
+def _max_replan_rounds_from_request(data: dict) -> int:
+    raw = (
+        data.get("max_replan_rounds")
+        if "max_replan_rounds" in data
+        else data.get("maxReplanRounds")
+    )
+    if raw is None:
+        return 1
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return 1
+    return max(0, min(5, val))
+
+
+def _run_queue_mode_from_request(data: dict) -> str:
+    raw = data.get("run_queue_mode") or data.get("runQueueMode")
+    if raw is None:
+        return str(SETTINGS_DEFAULTS.get("runQueueMode", "reject"))
+    mode = str(raw).lower().strip()
+    return mode if mode in ("fifo", "reject") else "reject"
+
+
+def _run_queue_max_depth_from_request(data: dict) -> int:
+    raw = data.get("run_queue_max_depth") or data.get("runQueueMaxDepth")
+    if raw is None:
+        return int(SETTINGS_DEFAULTS.get("runQueueMaxDepth", 1))
+    try:
+        return max(1, min(5, int(raw)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _configure_run_events_from_request(data: dict) -> None:
+    persist = data.get("persist_run_events")
+    if persist is None:
+        persist = data.get("persistRunEvents")
+    if persist is None:
+        persist = SETTINGS_DEFAULTS.get("persistRunEvents", True)
+    max_files = (
+        data.get("run_events_max_files")
+        or data.get("runEventsMaxFiles")
+        or SETTINGS_DEFAULTS.get("runEventsMaxFiles", 30)
+    )
+    max_age = (
+        data.get("run_events_max_age_days")
+        or data.get("runEventsMaxAgeDays")
+        or SETTINGS_DEFAULTS.get("runEventsMaxAgeDays", 7)
+    )
+    configure_run_events(
+        persist=bool(persist),
+        max_files=int(max_files),
+        max_age_days=int(max_age),
+    )
+
+
+def _start_agent_run_from_queue(run_id: str, payload: dict) -> None:
+    start_run_async(
+        run_id,
+        payload["ctx"],
+        payload["steps_in"],
+        use_fallback=payload.get("use_fallback", True),
+        run_mode=payload.get("run_mode", "standard"),
+    )
+
+
+register_run_starter(_start_agent_run_from_queue)
+configure_run_events(
+    persist=bool(SETTINGS_DEFAULTS.get("persistRunEvents", True)),
+    max_files=int(SETTINGS_DEFAULTS.get("runEventsMaxFiles", 30)),
+    max_age_days=int(SETTINGS_DEFAULTS.get("runEventsMaxAgeDays", 7)),
+)
 
 
 def _session_format_spec(data: dict, bundle: dict | None = None) -> dict | None:
@@ -108,6 +242,66 @@ def _session_format_spec(data: dict, bundle: dict | None = None) -> dict | None:
     if isinstance(bundle, dict) and bundle.get("format_spec"):
         return bundle["format_spec"]
     return None
+
+
+def _build_agent_context_snapshot(
+    *,
+    document_ids: list[str],
+    report_text: str,
+    planner_input_text: str,
+    metadata: dict | None,
+    question: dict | None,
+    split_idx,
+    layout,
+    assignment_text: str,
+    fill_target,
+    fill_target_info,
+    format_spec: dict | None,
+) -> dict:
+    """Portable plan-time context for run-time stale document fallback."""
+    return {
+        "schema_version": SETTINGS_SCHEMA_VERSION,
+        "document_ids": [str(x) for x in (document_ids or []) if str(x)],
+        "report_text": report_text or "",
+        "planner_input_text": planner_input_text or report_text or "",
+        "metadata": dict(metadata or {}),
+        "question": dict(question or {}),
+        "split_idx": split_idx,
+        "layout": layout,
+        "assignment_text": assignment_text or "",
+        "fill_target": fill_target,
+        "fill_target_info": fill_target_info,
+        "format_spec": format_spec or None,
+    }
+
+
+def _doc_ctx_from_snapshot(snapshot: dict | None) -> dict | None:
+    """Best-effort run context reconstruction when document cache is stale."""
+    if not isinstance(snapshot, dict):
+        return None
+    report_text = (snapshot.get("report_text") or "").strip()
+    planner_input_text = (snapshot.get("planner_input_text") or report_text).strip()
+    if not report_text and not planner_input_text:
+        return None
+    metadata = snapshot.get("metadata") or {}
+    question = snapshot.get("question") or {}
+    if not isinstance(metadata, dict) or not isinstance(question, dict):
+        return None
+    return {
+        "document_ids": [str(x) for x in (snapshot.get("document_ids") or []) if str(x)],
+        "report_text": report_text or planner_input_text,
+        "planner_input_text": planner_input_text or report_text,
+        "metadata": dict(metadata),
+        "question": dict(question),
+        "split_idx": snapshot.get("split_idx"),
+        "layout": snapshot.get("layout"),
+        "assignment_text": snapshot.get("assignment_text") or "",
+        "fill_target": snapshot.get("fill_target"),
+        "fill_target_info": snapshot.get("fill_target_info"),
+        "format_spec": snapshot.get("format_spec"),
+        "warnings": [],
+        "needs_uml": bool(snapshot.get("needs_uml")),
+    }
 
 
 def _maybe_save_insight(parsed: dict) -> None:
@@ -393,11 +587,14 @@ def parse_report_route():
                     "assignment_text": parsed.get("assignment_text", ""),
                     "layout": parsed.get("layout"),
                     "split_idx": parsed.get("split_idx"),
-                    "split_at_heading": parsed["fill_target"].get("split_at_heading"),
+                    "split_at_heading": (parsed.get("fill_target") or {}).get(
+                        "split_at_heading"
+                    ),
                     "planner_input_preview": (parsed.get("planner_input_text") or "")[:500],
                     "metadata": parsed.get("metadata"),
                     "question": parsed.get("question"),
-                    "questions": [parsed["question"]] if parsed.get("question") else [],
+                    "questions": parsed.get("questions")
+                    or ([parsed["question"]] if parsed.get("question") else []),
                     "needs_uml": parsed.get("needs_uml", False),
                     "warnings": parsed.get("warnings") or [],
                     "format_spec": parsed.get("format_spec"),
@@ -661,8 +858,10 @@ def agent_plan():
     run_mode = (data.get("run_mode") or "standard").strip().lower()
     output_mode = (data.get("output_mode") or "deliverable").strip().lower()
 
-    settings["solveQualityTier"] = _solve_quality_tier_from_request(data)
+    _apply_solve_quality_settings(settings, data)
     settings["run_mode"] = run_mode
+    settings["autoRemediateMaxRounds"] = _auto_remediate_max_rounds_from_request(data)
+    settings["maxReplanRounds"] = _max_replan_rounds_from_request(data)
 
     try:
         document_ids, bundle = store_from_request_payload(data)
@@ -702,6 +901,20 @@ def agent_plan():
             planner_input = bundle["planner_input_text"]
 
         metadata["document_ids"] = document_ids
+        if isinstance(question, dict) and question.get("type"):
+            metadata["question_type"] = question.get("type")
+        # Defensive detection: cached question.type can be stale in some
+        # parse/reload flows. Re-check assignment/planner text before planning.
+        cloze_probe_text = (assignment_text or planner_input or "").strip()
+        cloze_probe = detect_code_cloze(cloze_probe_text) if cloze_probe_text else {}
+        if not metadata.get("mixed_assignment") and cloze_probe.get("is_code_cloze"):
+            question = dict(question or {})
+            question["type"] = "code_cloze"
+            qmeta = dict(question.get("metadata") or {})
+            qmeta["code_cloze"] = cloze_probe
+            question["metadata"] = qmeta
+            metadata["code_cloze"] = cloze_probe
+            metadata["question_type"] = "code_cloze"
         needs_uml = bool(
             data.get("include_uml")
             or data.get("includeUml")
@@ -745,6 +958,15 @@ def agent_plan():
                 split_idx=split_idx,
                 format_spec=format_spec,
             )
+        plan = apply_question_type_overrides(
+            plan,
+            metadata=metadata,
+            question_type=(question or {}).get("type") or "",
+        )
+        if metadata.get("mixed_assignment"):
+            question = dict(question or {})
+            question["type"] = "mixed_assignment"
+            metadata["question_type"] = "mixed_assignment"
         steps = plan.get("steps", [])
         fingerprint = plan.get("plan_fingerprint") or compute_plan_fingerprint(
             planner_input,
@@ -767,11 +989,7 @@ def agent_plan():
         ctx["document_ids"] = document_ids
         ctx["run_mode"] = run_mode
         ctx["output_mode"] = output_mode
-        from modules.user_constraints import normalize_user_constraints
-
-        user_constraints = normalize_user_constraints(
-            data.get("user_constraints") or data.get("userConstraints")
-        )
+        user_constraints = _normalize_user_constraints_input(data)
         if user_constraints:
             ctx["user_constraints"] = user_constraints
         prov_custom = (data.get("provenance_custom_label") or data.get("provenanceCustomLabel") or "").strip()
@@ -826,6 +1044,21 @@ def agent_plan():
                     "prompt_versions": ctx.get("prompt_versions"),
                     "document_ids": document_ids,
                 },
+                "agent_context_snapshot": _build_agent_context_snapshot(
+                    document_ids=document_ids,
+                    report_text=report_text,
+                    planner_input_text=planner_input,
+                    metadata=metadata,
+                    question=question,
+                    split_idx=split_idx,
+                    layout=layout,
+                    assignment_text=assignment_text,
+                    fill_target=fill_target,
+                    fill_target_info=(
+                        bundle.get("fill_target_info") if isinstance(bundle, dict) else None
+                    ),
+                    format_spec=format_spec,
+                ),
                 "schema_version": SETTINGS_SCHEMA_VERSION,
             }
         )
@@ -849,13 +1082,16 @@ def agent_run():
     steps_in = data.get("steps") or (data.get("plan") or {}).get("steps") or []
     document_ids = [str(x) for x in (data.get("document_ids") or [])]
 
-    settings["solveQualityTier"] = _solve_quality_tier_from_request(data)
+    _apply_solve_quality_settings(settings, data)
     settings["run_mode"] = run_mode
+    settings["autoRemediateMaxRounds"] = _auto_remediate_max_rounds_from_request(data)
+    settings["maxReplanRounds"] = _max_replan_rounds_from_request(data)
     profile = normalize_profile(
         merge_profile(load_profile(), data.get("profile") or data.get("user_profile") or {})
     )
 
     try:
+        snapshot = data.get("agent_context_snapshot") if isinstance(data.get("agent_context_snapshot"), dict) else None
         if not document_ids:
             document_ids, bundle = store_from_request_payload(data)
             doc_ctx = (
@@ -870,13 +1106,35 @@ def agent_run():
                 }
             )
         else:
-            doc_ctx = resolve_agent_context(document_ids)
+            try:
+                doc_ctx = resolve_agent_context(document_ids)
+            except ValueError as e:
+                msg = str(e)
+                if "文档缓存已过期或不存在" not in msg:
+                    raise
+                fallback_ctx = _doc_ctx_from_snapshot(snapshot)
+                if not fallback_ctx:
+                    raise
+                doc_ctx = fallback_ctx
+                if not doc_ctx.get("document_ids"):
+                    doc_ctx["document_ids"] = list(document_ids)
+                logi("agent/run", "document cache stale; fallback to plan snapshot context")
+        # Keep run-time planner input aligned with plan-time when user edited
+        # assignment preview text; otherwise fingerprint verification may falsely
+        # fail with "stale_plan" immediately after regenerate.
+        override_assignment = (data.get("assignment_text") or "").strip()
+        if override_assignment and isinstance(doc_ctx, dict):
+            from agent.parse_documents import apply_assignment_text_override
+
+            apply_assignment_text_override(doc_ctx, override_assignment)
 
         format_spec = _session_format_spec(data, doc_ctx if isinstance(doc_ctx, dict) else None)
 
         report_text = doc_ctx["report_text"]
         metadata = dict(doc_ctx.get("metadata") or {})
         question = doc_ctx.get("question") or {}
+        if isinstance(question, dict) and question.get("type"):
+            metadata["question_type"] = question.get("type")
 
         for key in (
             "sections_detected",
@@ -888,6 +1146,20 @@ def agent_run():
             val = data.get(key)
             if val:
                 metadata[key] = val
+        cloze_probe_text = (
+            (doc_ctx.get("assignment_text") or "")
+            or (doc_ctx.get("planner_input_text") or "")
+            or report_text
+        )
+        cloze_probe = detect_code_cloze(cloze_probe_text or "")
+        if not metadata.get("mixed_assignment") and cloze_probe.get("is_code_cloze"):
+            question = dict(question or {})
+            question["type"] = "code_cloze"
+            qmeta = dict(question.get("metadata") or {})
+            qmeta["code_cloze"] = cloze_probe
+            question["metadata"] = qmeta
+            metadata["code_cloze"] = cloze_probe
+            metadata["question_type"] = "code_cloze"
 
         if not steps_in:
             return jsonify({"error": "缺少 steps 或 plan.steps"}), 400
@@ -923,6 +1195,11 @@ def agent_run():
             ctx["teacher_constraints"] = sections_norm["teacher_constraints"]
         ctx["run_mode"] = run_mode
         ctx["output_mode"] = output_mode_run
+        from agent.prompts import merge_prompt_versions
+
+        pv_req = data.get("prompt_versions")
+        if isinstance(pv_req, dict):
+            merge_prompt_versions(ctx, pv_req)
         from modules.user_constraints import normalize_user_constraints
 
         user_constraints_run = normalize_user_constraints(
@@ -943,7 +1220,9 @@ def agent_run():
         if "auto_remediate" in data:
             ctx["auto_remediate"] = bool(data.get("auto_remediate"))
         else:
-            ctx["auto_remediate"] = run_mode == "deep"
+            ctx["auto_remediate"] = run_mode in ("standard", "deep")
+        ctx["auto_remediate_max_rounds"] = _auto_remediate_max_rounds_from_request(data)
+        ctx["max_replan_rounds"] = _max_replan_rounds_from_request(data)
         ctx["replan_rounds"] = 0
         ctx["understand"] = data.get("understand") or {}
         if data.get("module_results"):
@@ -964,9 +1243,23 @@ def agent_run():
             ), 409
 
         use_fallback = bool(data.get("fallback_on_failure", True))
+        _configure_run_events_from_request(data)
+        queue_mode = _run_queue_mode_from_request(data)
+        queue_max_depth = _run_queue_max_depth_from_request(data)
+        queue_payload = {
+            "ctx": ctx,
+            "steps_in": steps_in,
+            "use_fallback": use_fallback,
+            "run_mode": run_mode,
+        }
 
         try:
-            run_id = acquire_run(data.get("run_id"))
+            run_id, run_status, queue_position = try_acquire_or_queue(
+                data.get("run_id"),
+                queue_mode=queue_mode,
+                queue_max_depth=queue_max_depth,
+                queue_payload=queue_payload,
+            )
         except RunBusyError as e:
             return jsonify(
                 {
@@ -975,23 +1268,33 @@ def agent_run():
                     "active_run_id": e.active_run_id,
                 }
             ), 409
+        except RunQueueFullError as e:
+            return jsonify(
+                {
+                    "error": str(e),
+                    "error_code": "queue_full",
+                    "active_run_id": e.active_run_id,
+                }
+            ), 409
 
-        start_run_async(
-            run_id,
-            ctx,
-            steps_in,
-            use_fallback=use_fallback,
-            run_mode=run_mode,
-        )
-        return jsonify(
-            {
-                "run_id": run_id,
-                "status": "running",
-                "output_mode": output_mode_run,
-                "events_url": f"/api/agent/events?run_id={run_id}",
-                "schema_version": SETTINGS_SCHEMA_VERSION,
-            }
-        )
+        if run_status == "running":
+            start_run_async(
+                run_id,
+                ctx,
+                steps_in,
+                use_fallback=use_fallback,
+                run_mode=run_mode,
+            )
+        body = {
+            "run_id": run_id,
+            "status": run_status,
+            "output_mode": output_mode_run,
+            "events_url": f"/api/agent/events?run_id={run_id}",
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+        if run_status == "queued":
+            body["queue_position"] = queue_position
+        return jsonify(body)
     except ValueError as e:
         msg = str(e)
         body = {"error": msg}
@@ -1008,7 +1311,7 @@ def agent_run():
 def agent_events():
     run_id = request.args.get("run_id", "")
     since = int(request.args.get("since") or 0)
-    if not run_id or not get_run(run_id):
+    if not run_id or not run_exists(run_id):
         return jsonify({"error": "run_id 无效或已结束"}), 404
 
     def generate():
@@ -1241,6 +1544,72 @@ def agent_retry_step():
 # ══════════════════════════════════════════════════════
 
 
+def _solve_text_cloze_or_lab(
+    *,
+    settings: dict,
+    text: str,
+    question: dict | None = None,
+    preferred_lang: str = "",
+    include_uml: bool = False,
+    format_spec=None,
+    user_constraints=None,
+    approved_jar_ids=None,
+) -> dict:
+    """Shared detect_code_cloze → call_ai(code_cloze) or solve_lab (R2/R3)."""
+    cloze_probe = detect_code_cloze(text) if text else {}
+    lang = preferred_lang or cloze_probe.get("language_hint") or ""
+
+    if cloze_probe.get("is_code_cloze"):
+        cloze_question = {
+            "type": "code_cloze",
+            "full_text": text,
+            "content": text,
+            "preferred_lang": lang or "java",
+            "metadata": {"code_cloze": cloze_probe},
+        }
+        result = call_ai(
+            settings["api_key"],
+            settings["provider"],
+            settings["model"],
+            cloze_question,
+            custom_url=settings.get("custom_url") or "",
+        )
+        parsed = result.get("parsed") or {}
+        return {
+            "type": "code_cloze",
+            "answer": result.get("answer", ""),
+            "parsed": parsed,
+            "blanks": parsed.get("blanks") or {},
+            "completed_code": parsed.get("completed_code") or "",
+            "pattern_note": parsed.get("pattern_note") or "",
+            "language": parsed.get("language") or result.get("language") or lang or "java",
+            "code_cloze_detected": cloze_probe,
+        }
+
+    q = dict(question or {})
+    q.setdefault("type", "lab_report")
+    if text:
+        q.setdefault("full_text", text)
+        q.setdefault("content", text)
+    if lang:
+        q.setdefault("preferred_lang", lang)
+    result = solve_lab(
+        settings["api_key"],
+        settings["provider"],
+        settings["model"],
+        q,
+        custom_url=settings.get("custom_url") or "",
+        include_uml=include_uml,
+        format_spec=format_spec,
+        settings=settings,
+        user_constraints=user_constraints,
+        approved_jar_ids=approved_jar_ids or None,
+    )
+    out = dict(result)
+    out["type"] = "lab_report"
+    return out
+
+
 @app.route("/api/solve", methods=["POST"])
 def solve():
     data = request.json
@@ -1251,7 +1620,6 @@ def solve():
 
     provider = settings["provider"]
     model = settings["model"]
-    custom_url = settings["custom_url"]
     code_language = data.get("code_language", "")
     include_code = data.get("include_code", True)
     include_uml = data.get("include_uml", False)
@@ -1260,25 +1628,32 @@ def solve():
         question = {**question, "preferred_lang": code_language}
 
     format_spec = _session_format_spec(data)
+    text = (
+        (question.get("full_text") or question.get("content") or "")
+        or (data.get("text") or data.get("full_text") or "")
+    ).strip()
 
     try:
         logi(
             "ai",
             f'解题 type={question.get("type")} provider={provider} model={model} lang={code_language}',
         )
-        result = solve_lab(
-            settings["api_key"],
-            provider,
-            model,
-            question,
-            custom_url=custom_url,
+        result = _solve_text_cloze_or_lab(
+            settings=settings,
+            text=text,
+            question=question,
+            preferred_lang=code_language or question.get("preferred_lang") or "",
             include_uml=include_uml,
             format_spec=format_spec,
         )
-        result["include_code"] = include_code
-        result["include_uml"] = include_uml
+        if result.get("type") != "code_cloze":
+            result["include_code"] = include_code
+            result["include_uml"] = include_uml
         _maybe_save_insight(result.get("parsed", {}))
-        logi("ai", f'解题成功 answer_len={len(result.get("answer", ""))}')
+        logi(
+            "ai",
+            f'解题成功 type={result.get("type")} answer_len={len(result.get("answer", ""))}',
+        )
         return jsonify(result)
     except Exception as e:
         loge("ai", traceback.format_exc())
@@ -1707,15 +2082,10 @@ def tool_solve():
     if err:
         return _tool_err(err)
     try:
-        question = {
-            "type": "lab_report",
-            "full_text": text,
-            "content": text,
-            "preferred_lang": data.get("language") or data.get("code_language") or "",
-        }
-        include_uml = bool(data.get("include_uml"))
         from modules.user_constraints import normalize_user_constraints
 
+        preferred_lang = data.get("language") or data.get("code_language") or ""
+        include_uml = bool(data.get("include_uml"))
         user_constraints = normalize_user_constraints(
             data.get("user_constraints") or data.get("userConstraints")
         )
@@ -1725,20 +2095,21 @@ def tool_solve():
             for i in (data.get("approved_jar_ids") or data.get("approvedJarIds") or [])
             if str(i).strip()
         ]
-        result = solve_lab(
-            settings["api_key"],
-            settings["provider"],
-            settings["model"],
-            question,
-            custom_url=settings["custom_url"],
+        result = _solve_text_cloze_or_lab(
+            settings=settings,
+            text=text,
+            preferred_lang=preferred_lang,
             include_uml=include_uml,
             format_spec=data.get("format_spec"),
-            settings=settings,
             user_constraints=user_constraints,
             approved_jar_ids=approved_jar_ids or None,
         )
+        if result.get("type") == "code_cloze":
+            return _tool_ok(result)
+
         parsed = result.get("parsed") or {}
         payload = {
+            "type": "lab_report",
             "answer": result.get("answer", ""),
             "parsed": parsed,
             "code": parsed.get("code") or result.get("code", ""),

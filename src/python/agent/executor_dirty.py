@@ -259,12 +259,25 @@ def code_status_from_ctx(ctx: dict[str, Any] | None) -> str:
     return str(meta.get("code_status") or "")
 
 
+def _is_code_cloze_verify_ctx(ctx: dict[str, Any] | None) -> bool:
+    if not ctx:
+        return False
+    from agent.cloze_run import is_code_cloze_run
+
+    steps = ctx.get("confirmed_steps") or (ctx.get("plan") or {}).get("steps") or []
+    if is_code_cloze_run(ctx, steps):
+        return True
+    solve = ((ctx.get("module_results") or {}).get("solve_code_cloze") or {}).get("data") or {}
+    return solve.get("type") == "code_cloze"
+
+
 def modules_to_rerun_from_verify(
     suggested_actions: list[str],
     ctx: dict[str, Any] | None = None,
 ) -> list[str]:
     """Map verify_answer suggested_actions to executor module ids."""
     verified = code_status_from_ctx(ctx) == "verified"
+    code_cloze_run = _is_code_cloze_verify_ctx(ctx)
     out: list[str] = []
     for action in suggested_actions or []:
         a = (action or "").strip().lower()
@@ -284,6 +297,8 @@ def modules_to_rerun_from_verify(
         elif a == "revise_full":
             if verified:
                 out.append("revise_answer")
+            elif code_cloze_run:
+                out.append("solve_code_cloze")
             else:
                 out.append("solve_lab")
     return list(dict.fromkeys(out))
@@ -301,9 +316,14 @@ def mark_dirty_from_verify(ctx: dict[str, Any], suggested_actions: list[str]) ->
         a = (action or "").strip().lower()
         if a == "revise_full":
             if verified:
-                ctx["dirty_fields"] = {
-                    "solve_lab": ["steps_analysis", "result_description", "summary", "expected_output"]
-                }
+                if _is_code_cloze_verify_ctx(ctx):
+                    ctx["dirty_fields"] = {"solve_code_cloze": ["blanks"]}
+                else:
+                    ctx["dirty_fields"] = {
+                        "solve_lab": ["steps_analysis", "result_description", "summary", "expected_output"]
+                    }
+            elif _is_code_cloze_verify_ctx(ctx):
+                ctx["dirty_fields"] = {"solve_code_cloze": ["full"]}
             else:
                 ctx["dirty_fields"] = {"solve_lab": ["full"]}
             ctx["fill_sections"] = None

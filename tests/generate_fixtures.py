@@ -68,6 +68,59 @@ def combined_lab():
     return doc
 
 
+SAMPLE_CLOZE_LINES = [
+    "public class MainControllerCenter {",
+    "    ( 1 ) MainControllerCenter instance;",
+    "    private ( 2 ) MainControllerCenter() {}",
+    "    public static MainControllerCenter getInstance() {",
+    "        if (instance == null) {",
+    "            instance = ( 3 ) MainControllerCenter();",
+    "        }",
+    "        return instance;",
+    "    }",
+    "}",
+]
+
+
+def mixed_theory_cloze_paste_text() -> str:
+    """Plain-text golden for split_text_assignment_segments (aligned with mixed_theory_cloze docx)."""
+    cloze = "\n".join(SAMPLE_CLOZE_LINES)
+    return (
+        "一、简答题\n"
+        "1. 简要说明外观模式（Facade）的意图及适用场景，并举例说明子系统如何被封装。\n"
+        "2. 比较工厂方法模式与抽象工厂模式的异同，说明各自适用于何种产品族扩展场景。\n"
+        "3. 简述单例模式懒汉式与饿汉式实现的线程安全差异及适用条件。\n"
+        "二、代码填空\n"
+        "阅读下列 Java 代码，完成 1–3 空（Singleton）。\n"
+        f"{cloze}"
+    )
+
+
+def mixed_theory_cloze():
+    """O10/R8: theory short answers + Singleton code cloze in one exam docx."""
+    doc = Document()
+    doc.add_paragraph("软件工程期末复习 — 混排样卷")
+    doc.add_paragraph("一、简答题")
+    doc.add_paragraph("1. 简要说明外观模式（Facade）的意图及适用场景。")
+    doc.add_paragraph("2. 比较工厂方法模式与抽象工厂模式的异同。")
+    doc.add_paragraph("二、代码填空")
+    doc.add_paragraph("阅读下列 Java 代码，完成 1–3 空（Singleton）。")
+    table = doc.add_table(rows=0, cols=1)
+    for line in SAMPLE_CLOZE_LINES:
+        table.add_row().cells[0].text = line
+    return doc
+
+
+def code_cloze_singleton():
+    """Singleton 代码填空 — docx import golden (R5 / Phase D)."""
+    doc = Document()
+    doc.add_paragraph("设计模式复习 — Singleton 代码填空")
+    table = doc.add_table(rows=0, cols=1)
+    for line in SAMPLE_CLOZE_LINES:
+        table.add_row().cells[0].text = line
+    return doc
+
+
 def training_table():
     """Simulate a 实训周 table-based report where the task is inside a table cell."""
     doc = Document()
@@ -150,6 +203,8 @@ def main():
         ("lab_report_table.docx", lab_report_table),
         ("variant_four_sections.docx", variant_four_sections),
         ("variant_three_sections.docx", variant_three_sections),
+        ("code_cloze_singleton.docx", code_cloze_singleton),
+        ("mixed_theory_cloze.docx", mixed_theory_cloze),
     ]
     for name, builder in specs:
         out = FIXTURES_DIR / name

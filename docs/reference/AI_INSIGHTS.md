@@ -4,6 +4,25 @@ LLM 在解题过程中自述的判断依据、边界情况、环境适配决定�
 
 ---
 
+## 2026-06-08
+
+### #N 计划层与执行层题型分裂 — `code_cloze` 误走 `solve_lab`
+
+**来源**：用户 Singleton 填空题；ReAct 思考写「这是代码补全填空题」，但工具调用仍为 `solve_lab OK`。
+
+**洞察**：Planner/解析可正确产出 `solve_code_cloze` 步骤，但 ReAct AO-7 bootstrap **硬编码**先跑 `solve_lab`；且 `solve_code_cloze` 长期无 `react_alias`，LLM 在工具列表里「看不见」填空专用路径。思考内容与工具选择可完全脱节。
+
+**改进**（BF49 等，见 [CODE_CLOZE_QUESTIONS.md](../features/CODE_CLOZE_QUESTIONS.md)）：
+
+1. `registry.py`：为 `solve_code_cloze` 注册 ReAct 工具
+2. `react_loop.py`：`_is_code_cloze_run` → bootstrap `solve_code_cloze`，跳过 `solve_lab`
+3. `react_prompts.py`：计划清单注明禁止 `run_code`
+4. `deliverable.py` / `app.js`：交付物与收尾优先 `solve_code_cloze` 结构化 `blanks`
+
+**教训**：新模块若只接 Planner/Executor 不接 ReAct registry + bootstrap，会出现「计划对、执行错」的假完成。
+
+---
+
 ## 2026-06-05
 
 ### #1 代码环境约束 — Servlet/JSP 混入 Java
@@ -274,3 +293,315 @@ LLM 在解题过程中自述的判断依据、边界情况、环境适配决定�
 **注入文本**:
 
 编译错误时检查文件扩展名与语法是否匹配。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-1f419b407222`
+
+**来源候选**: notes_hash:1f419b407222
+
+**触发器**: `solve_lab.notes_hash=1f419b407222`
+
+**注入文本**:
+
+【技能候选 notes_hash-1f419b407222】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-de2e66cdd7d6`
+
+**来源候选**: notes_hash:de2e66cdd7d6
+
+**触发器**: `solve_lab.notes_hash=de2e66cdd7d6`
+
+**注入文本**:
+
+【技能候选 notes_hash-de2e66cdd7d6】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-099389d2cbfa`
+
+**来源候选**: notes_hash:099389d2cbfa
+
+**触发器**: `solve_lab.notes_hash=099389d2cbfa`
+
+**注入文本**:
+
+【技能候选 notes_hash-099389d2cbfa】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-5630e2b9a9c2`
+
+**来源候选**: notes_hash:5630e2b9a9c2
+
+**触发器**: `solve_lab.notes_hash=5630e2b9a9c2`
+
+**注入文本**:
+
+【技能候选 notes_hash-5630e2b9a9c2】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-65774854b20b`
+
+**来源候选**: notes_hash:65774854b20b
+
+**触发器**: `solve_lab.notes_hash=65774854b20b`
+
+**注入文本**:
+
+【技能候选 notes_hash-65774854b20b】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-330440fed20c`
+
+**来源候选**: notes_hash:330440fed20c
+
+**触发器**: `solve_lab.notes_hash=330440fed20c`
+
+**注入文本**:
+
+【技能候选 notes_hash-330440fed20c】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-f0bacaea3423`
+
+**来源候选**: notes_hash:f0bacaea3423
+
+**触发器**: `solve_lab.notes_hash=f0bacaea3423`
+
+**注入文本**:
+
+【技能候选 notes_hash-f0bacaea3423】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-8e4d5800d4dc`
+
+**来源候选**: notes_hash:8e4d5800d4dc
+
+**触发器**: `solve_lab.notes_hash=8e4d5800d4dc`
+
+**注入文本**:
+
+【技能候选 notes_hash-8e4d5800d4dc】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-dcca4f38a5de`
+
+**来源候选**: notes_hash:dcca4f38a5de
+
+**触发器**: `solve_lab.notes_hash=dcca4f38a5de`
+
+**注入文本**:
+
+【技能候选 notes_hash-dcca4f38a5de】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-85c718fde541`
+
+**来源候选**: notes_hash:85c718fde541
+
+**触发器**: `solve_lab.notes_hash=85c718fde541`
+
+**注入文本**:
+
+【技能候选 notes_hash-85c718fde541】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-94f1e986e376`
+
+**来源候选**: notes_hash:94f1e986e376
+
+**触发器**: `solve_lab.notes_hash=94f1e986e376`
+
+**注入文本**:
+
+【技能候选 notes_hash-94f1e986e376】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-3d77f6b8cd26`
+
+**来源候选**: notes_hash:3d77f6b8cd26
+
+**触发器**: `solve_lab.notes_hash=3d77f6b8cd26`
+
+**注入文本**:
+
+【技能候选 notes_hash-3d77f6b8cd26】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-7026cd5a61c1`
+
+**来源候选**: notes_hash:7026cd5a61c1
+
+**触发器**: `solve_lab.notes_hash=7026cd5a61c1`
+
+**注入文本**:
+
+【技能候选 notes_hash-7026cd5a61c1】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-b84a906b15ae`
+
+**来源候选**: notes_hash:b84a906b15ae
+
+**触发器**: `solve_lab.notes_hash=b84a906b15ae`
+
+**注入文本**:
+
+【技能候选 notes_hash-b84a906b15ae】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-af96575cf15e`
+
+**来源候选**: notes_hash:af96575cf15e
+
+**触发器**: `solve_lab.notes_hash=af96575cf15e`
+
+**注入文本**:
+
+【技能候选 notes_hash-af96575cf15e】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-75781889ad5d`
+
+**来源候选**: notes_hash:75781889ad5d
+
+**触发器**: `solve_lab.notes_hash=75781889ad5d`
+
+**注入文本**:
+
+【技能候选 notes_hash-75781889ad5d】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-9baa3f6c6922`
+
+**来源候选**: notes_hash:9baa3f6c6922
+
+**触发器**: `solve_lab.notes_hash=9baa3f6c6922`
+
+**注入文本**:
+
+【技能候选 notes_hash-9baa3f6c6922】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-ceba4165e4f3`
+
+**来源候选**: notes_hash:ceba4165e4f3
+
+**触发器**: `solve_lab.notes_hash=ceba4165e4f3`
+
+**注入文本**:
+
+【技能候选 notes_hash-ceba4165e4f3】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-8046661c79cc`
+
+**来源候选**: notes_hash:8046661c79cc
+
+**触发器**: `solve_lab.notes_hash=8046661c79cc`
+
+**注入文本**:
+
+【技能候选 notes_hash-8046661c79cc】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-d52444c37461`
+
+**来源候选**: notes_hash:d52444c37461
+
+**触发器**: `solve_lab.notes_hash=d52444c37461`
+
+**注入文本**:
+
+【技能候选 notes_hash-d52444c37461】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-a80b620f0865`
+
+**来源候选**: notes_hash:a80b620f0865
+
+**触发器**: `solve_lab.notes_hash=a80b620f0865`
+
+**注入文本**:
+
+【技能候选 notes_hash-a80b620f0865】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-84fb8f3a0e5e`
+
+**来源候选**: notes_hash:84fb8f3a0e5e
+
+**触发器**: `solve_lab.notes_hash=84fb8f3a0e5e`
+
+**注入文本**:
+
+【技能候选 notes_hash-84fb8f3a0e5e】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-08
+
+### Promoted skill: `notes_hash-48bf62468e62`
+
+**来源候选**: notes_hash:48bf62468e62
+
+**触发器**: `solve_lab.notes_hash=48bf62468e62`
+
+**注入文本**:
+
+【技能候选 notes_hash-48bf62468e62】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-09
+
+### Promoted skill: `notes_hash-2090bd2838ea`
+
+**来源候选**: notes_hash:2090bd2838ea
+
+**触发器**: `solve_lab.notes_hash=2090bd2838ea`
+
+**注入文本**:
+
+【技能候选 notes_hash-2090bd2838ea】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-09
+
+### Promoted skill: `error_category-compile_error`
+
+**来源候选**: error_category:compile_error
+
+**触发器**: `run_code.error_category=compile_error`
+
+**注入文本**:
+
+编译错误时检查文件扩展名与语法是否匹配。
+
+## 2026-06-11
+
+### Promoted skill: `notes_hash-21cb1b1561eb`
+
+**来源候选**: notes_hash:21cb1b1561eb
+
+**触发器**: `solve_lab.notes_hash=21cb1b1561eb`
+
+**注入文本**:
+
+【技能候选 notes_hash-21cb1b1561eb】根据历史运行经验，请注意与此触发相关的常见错误模式。

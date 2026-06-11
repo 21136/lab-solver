@@ -95,6 +95,63 @@ def test_verify_schema():
     assert any(c["id"] == "schema_complete" for c in report["checks"])
 
 
+def test_verify_code_cloze_passes_without_lab_fields():
+    ctx = {
+        "confirmed_steps": [
+            {"module": "solve_code_cloze", "default_checked": True},
+            {"module": "present_deliverable", "default_checked": True},
+        ],
+        "module_results": {
+            "solve_code_cloze": {
+                "ok": True,
+                "data": {
+                    "type": "code_cloze",
+                    "parsed": {
+                        "blanks": {
+                            "1": {"answer": "static", "brief": "修饰符"},
+                            "2": {"answer": "private", "brief": "可见性"},
+                        },
+                    },
+                },
+            }
+        },
+    }
+    report = verify_answer(ctx)
+    by_id = {c["id"]: c for c in report["checks"]}
+    assert "schema_complete" not in by_id
+    assert by_id["code_cloze_schema"]["ok"] is True
+    assert by_id["deliverable_ready"]["ok"] is True
+    assert report["passed"] is True
+    assert "revise_full" not in report["suggested_actions"]
+
+
+def test_verify_code_cloze_runs_common_checks():
+    ctx = {
+        "confirmed_steps": [{"module": "solve_code_cloze", "default_checked": True}],
+        "teacher_constraints": {"rules": [{"text": "必须包含关键字XYZ", "section": "summary"}]},
+        "module_results": {
+            "solve_code_cloze": {
+                "ok": True,
+                "data": {
+                    "type": "code_cloze",
+                    "parsed": {
+                        "blanks": {
+                            "1": {"answer": "TODO", "brief": "必须包含关键字XYZ"},
+                            "2": {"answer": "value", "brief": ""},
+                        },
+                    },
+                },
+            }
+        },
+    }
+    report = verify_answer(ctx)
+    by_id = {c["id"]: c for c in report["checks"]}
+    assert by_id["code_cloze_schema"]["ok"] is True
+    assert by_id["no_placeholder"]["ok"] is False
+    assert by_id["constraint_present"]["ok"] is True
+    assert report["passed"] is False
+
+
 def test_issues_fingerprint_stable():
     issues = [{"field": "summary", "message": "太短"}]
     assert _issues_fingerprint(issues) == _issues_fingerprint(list(issues))
@@ -162,6 +219,7 @@ if __name__ == "__main__":
     test_preflight_python_ok()
     test_preflight_python_syntax_fail()
     test_verify_schema()
+    test_verify_code_cloze_runs_common_checks()
     test_issues_fingerprint_stable()
     test_sub_fingerprints_stable()
     test_revise_summary_skips_run()

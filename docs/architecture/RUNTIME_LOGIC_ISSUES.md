@@ -1,9 +1,9 @@
 # 运行逻辑问题清单
 
 **用途**：记录 Agent 端到端运行链路（Electron → Flask → 标准/深度/ReAct）中已识别的逻辑缺口、语义不一致与体验问题。  
-**审查日期**：2026-06-06  
-**状态**：P0–P3 + RL7 + RL10 + RL11 已修复  
-**关联**：[V1_BUGFIX_LOG.md](../logs/V1_BUGFIX_LOG.md)（BF1–BF38，RL → BF28–BF38）· [AGENT_ARCHITECTURE_V3.md](AGENT_ARCHITECTURE_V3.md) · [V5_PRODUCT_PIVOT.md](../product/V5_PRODUCT_PIVOT.md) · [V4_MULTI_PHASE_SOLVE.md](../product/V4_MULTI_PHASE_SOLVE.md)
+**审查日期**：2026-06-06（`code_cloze` 补充 2026-06-08）  
+**状态**：P0–P3 + RL1–RL12 已修复；`code_cloze` 执行链路 BF45–BF49 已修补  
+**关联**：[V1_BUGFIX_LOG.md](../logs/V1_BUGFIX_LOG.md)（BF1–BF50）· [STANDARD_MODE_QUALITY.md](../design/STANDARD_MODE_QUALITY.md) · [CODE_CLOZE_QUESTIONS.md](../features/CODE_CLOZE_QUESTIONS.md) · [AGENT_ARCHITECTURE_V3.md](AGENT_ARCHITECTURE_V3.md)
 
 ---
 
@@ -20,7 +20,7 @@
   → applyAgentRunDone → 答案工作区 / 历史
 ```
 
-三种模式共享 `solve_lab`（默认 V4 分阶段 pipeline）。**RL1–RL12 已修复**；RL7 三模式共用 `RunOrchestrator` 收尾（`complete_agent_run`）与 ReAct `run_module` 分发。
+三种模式默认共享 `solve_lab`（V4 分阶段 pipeline）；**`code_cloze` 题型**改走 `solve_code_cloze`（标准模式按 plan 步骤；ReAct bootstrap 见 BF49）。**RL1–RL12 已修复**；RL7 三模式共用 `RunOrchestrator` 收尾（`complete_agent_run`）与 ReAct `run_module` 分发。
 
 ---
 
@@ -343,7 +343,8 @@ Agent 执行中验证被 skip（`reason: missing_jar`），跑完后 `applyAgent
 
 ### 说明（残余）
 
-- `acquire_run` 仍全局单任务（`RunBusyError`）；刷新恢复见 RL10 续（BF41）。
+- 默认仍单活跃 run（`RunBusyError`）；可选 `runQueueMode=fifo` 排队第二任务（IR-16b）。
+- 崩溃后 `run_events/{run_id}.jsonl` 可回放；in-flight 无终端事件标 `orphaned`（IR-16a）。
 
 ### RL10 续 — 刷新后 run 状态恢复 ✅
 
@@ -375,6 +376,12 @@ Agent 执行中验证被 skip（`reason: missing_jar`），跑完后 `applyAgent
 - 慢启动时 5s 后界面可交互，但合规/日志等 API 仅在 health 通过或 `server-ready` IPC 后执行；
 - 正常启动仍只 Toast 一次「AI引擎就绪」。
 
+### 2026-06-08 补充（BF45）
+
+- 新增主进程状态查询兜底：`get-server-status`（`ready` / `error`）；
+- 渲染层 `init()` 启动即主动拉取状态，避免一次性 `server-ready` 事件因监听时序丢失；
+- 同日修复渲染层语法错误（`copyBtn` 重复声明）导致 bootstrap 提前中断的问题。
+
 ---
 
 ## RL12 — 深度模式 `done.ok` 过严 ✅
@@ -393,13 +400,48 @@ Agent 执行中验证被 skip（`reason: missing_jar`），跑完后 `applyAgent
 | **P2** | RL5 子阶段 SSE + RL6 去重 run_code + RL9 提示词 | ✅ 2026-06-06 |
 | **P3** | RL7 done.ok 收敛 + RL8 JAR 中途 + RL10 SSE 重连 + RL12 deep ok | ✅ 2026-06-06 |
 | **AO-P0** | deep V4 去重 preflight/fix（`test_deep_pipeline_v4.py`） | ✅ 2026-06-06 |
-| **backlog** | — | — |
+| **backlog** | Phase D/E `code_cloze`（Word 导入、判分） | 见 [CODE_CLOZE_QUESTIONS.md](../features/CODE_CLOZE_QUESTIONS.md) |
+
+---
+
+## 2026-06-08 补充 — `code_cloze` 执行链路（BF45–BF49）
+
+**背景**：Phase B/C 已落地检测与 Step3 UI，但端到端仍可能：启动卡死、计划过期、题型漏判、run 500、ReAct 误走 `solve_lab`。
+
+| 症状 | 根因 | 修复 | BF |
+|------|------|------|-----|
+| 长期「正在连接后端」 | `app.js` `copyBtn` 重复声明致 bootstrap 中断；`server-ready` 竞态 | `get-server-status` IPC + 启动拉状态 | BF45 |
+| 重新生成计划仍「计划已过期」 | run 未用编辑后 `assignment_text` 重算指纹 | `apply_assignment_text_override` on run | BF46 |
+| 计划仍 `solve_lab` | `fill_target` 分支未跑 `detect_code_cloze` | `parse_documents` + `server.py` 二次探测 | BF47 |
+| 点执行即 500 `ctx` 未赋值 | run 二次探测在 `make_agent_context` 前读 `ctx` | 改读 `doc_ctx` | BF48 |
+| 计划是填空、执行是实验报告 | ReAct AO-7 无条件 bootstrap `solve_lab`；无 ReAct 工具 | `solve_code_cloze` alias + cloze bootstrap + deliverable `type` | BF49 |
+
+**验收（填空题 Singleton 等）**：
+
+1. 计划含 `solve_code_cloze` + `present_deliverable`
+2. ReAct 日志首步 `solve_code_cloze OK`（非 `solve_lab`）
+3. Step3 空号列表 +「复制全部空号」
+
+**涉及文件**：`react_loop.py`、`registry.py`、`react_prompts.py`、`deliverable.py`、`app.js`、`server.py`、`parse_documents.py`、`main.js`、`preload.js`
+
+**后续改动**：跨模式接入（工具箱、深度跳过 draft）须遵循 [CODE_CLOZE_ROUTING.md](../features/CODE_CLOZE_ROUTING.md)，避免只改 Planner 再次踩坑。
+
+---
+
+## 2026-06-09 补充 — `code_cloze` 校验误报与 Step3 展示时机（BF55）
+
+| 症状 | 根因 | 修复 |
+|------|------|------|
+| 进度 100% 后先见校验红叉「缺 steps_analysis…」 | IR-9 合并通用检查后仍对 cloze 跑 `schema_complete` / `deliverable_ready`（报告字段） | `quality.py`：cloze 专用 `code_cloze_schema` + `blanks` 就绪检查 |
+| 约 30s 后才出现空号答案 | `revise_full` → `auto_remediate` 误重跑 `solve_lab`；工作区等到 `done` 才渲染 | `executor_dirty.py` 改 `solve_code_cloze`；`progress` 附带 `deliverable`；执行中隐藏校验失败 UI |
+
+**验收**：完形填空执行完 `present_deliverable` 即见空号列表；`pytest tests/test_phase2b.py::test_verify_code_cloze_passes_without_lab_fields`。
 
 ---
 
 ## 与已修复项的关系
 
-[V1_BUGFIX_LOG.md](../logs/V1_BUGFIX_LOG.md) 中 BF1–BF41 为**已落地**修复（含 BF28–BF41 对应 RL1–RL12）。
+[V1_BUGFIX_LOG.md](../logs/V1_BUGFIX_LOG.md) 中 BF1–BF55 为**已落地**修复（含 BF28–BF41 对应 RL1–RL12；BF45–BF49 为 `code_cloze`/启动补充；**BF50** 标准模式默认 auto_remediate + Step2 质量条；**BF55** cloze 校验/UI）。
 
 **RL 修复记录**：
 
@@ -416,10 +458,11 @@ Agent 执行中验证被 skip（`reason: missing_jar`），跑完后 `applyAgent
 | RL8 | BF36 | `tests/test_runtime_logic.py::TestRL8JarConsentMidRun` |
 | RL10 | BF37、BF41 | `tests/test_runtime_logic.py::TestRL10SseReplay` |
 | RL12 | BF38 | `tests/test_runtime_logic.py::TestRL12DeepDoneOk` |
-| RL11 | BF39 | `tests/test_runtime_logic.py::TestRL11InitServerReady` |
+| RL11 | BF39、BF45 | `tests/test_runtime_logic.py::TestRL11InitServerReady` |
+| — | BF46–BF49、BF55 | `code_cloze` 专项；`tests/test_react_loop.py` bootstrap；`test_phase2b` 校验 |
 
 后续 RL 修复仍按：本表标 ✅ → 用户可见则写 BF 条目 → 补 `test_runtime_logic.py` 或专项 pytest。
 
 ---
 
-*文档版本：2026-06-06（P0–P3 落地）· 审查方式：静态链路分析 + `tests/test_runtime_logic.py`*
+*文档版本：2026-06-09（+ code_cloze BF45–BF49、BF55）· 审查方式：静态链路分析 + pytest*

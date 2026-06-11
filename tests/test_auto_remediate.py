@@ -164,3 +164,36 @@ def test_auto_remediate_off_no_rerun():
     assert orch._auto_remediate_rounds == 0
     assert calls["n"] == 0
     assert len([e for e in events if e.get("type") == "verification"]) == 1
+
+
+def test_auto_remediate_max_rounds_from_ctx():
+    ctx = {
+        "run_id": "rem4",
+        "module_results": {"solve_lab": _incomplete_solve()},
+        "confirmed_steps": [{"module": "solve_lab", "params": {}, "default_checked": True}],
+        "consecutive_failures": 0,
+        "replan_rounds": 0,
+        "plan": {"steps": []},
+        "decision_log": [],
+        "auto_remediate": True,
+        "auto_remediate_max_rounds": 2,
+    }
+    events: list[dict] = []
+    calls = {"n": 0}
+
+    def mock_solve(c, p):
+        calls["n"] += 1
+        # first rerun still incomplete, second rerun completes
+        if calls["n"] == 1:
+            return _incomplete_solve()
+        return _complete_solve()
+
+    orch = RunOrchestrator("rem4", ctx, emit=events.append)
+    orch.completed_modules = ["solve_lab"]
+
+    with patch.dict("agent.executor._MODULE_RUNNERS", {"solve_lab": mock_solve}, clear=False):
+        report = orch.run_verify(auto_remediate=True)
+
+    assert report.get("passed") is True
+    assert calls["n"] == 2
+    assert orch._auto_remediate_rounds == 2

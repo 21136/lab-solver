@@ -100,6 +100,13 @@ def test_pipeline_verified_writes_stdout(mock_run, mock_llm):
 def test_resolve_solve_quality_tier():
     assert resolve_solve_quality_tier({"solveQualityTier": "fast"}) == "fast"
     assert resolve_solve_quality_tier({"solveQualityTier": "bogus"}) == "standard"
+    assert (
+        resolve_solve_quality_tier(
+            {"solveQualityTier": "standard", "solveQualityTierExplicit": True},
+            {"question": {"type": "code_cloze"}},
+        )
+        == "standard"
+    )
     assert tier_limits("fast")["force_skip_validation"] is True
     assert tier_limits("thorough")["max_fix"] == 3
 

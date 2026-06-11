@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -19,12 +20,15 @@ from agent.user_profile import normalize_profile
 from agent.types import (
     AGENT_SCHEMA_VERSION,
     DecisionLogEntry,
+    DEFAULT_MAX_REPLAN_ROUNDS,
+    MAX_CONSECUTIVE_FAILURES_DEFAULT,
     PlanResult,
     PlanStep,
+    max_replan_rounds_for_ctx,
 )
 
-MAX_CONSECUTIVE_FAILURES = 3
-MAX_REPLAN_ROUNDS = 1
+MAX_CONSECUTIVE_FAILURES = MAX_CONSECUTIVE_FAILURES_DEFAULT
+MAX_REPLAN_ROUNDS = DEFAULT_MAX_REPLAN_ROUNDS
 from config import _any_runtime_available, _runtime_available_for
 from log_util import loge, logi
 from modules.lab_parse import parse_lab_json
@@ -37,6 +41,37 @@ from modules.user_constraints import normalize_user_constraints, should_skip_val
 _THIN_PLANNER_MODULES = planner_module_catalog()
 
 _DEFAULT_PROFILE = normalize_profile(None)
+
+
+@dataclass
+class PlanPipelineStage:
+    source: str
+    name: str
+    detail: str = ""
+
+
+def _record_plan_stage(stages: list[PlanPipelineStage], source: str, name: str, detail: str = "") -> None:
+    stages.append(PlanPipelineStage(source=source, name=name, detail=detail))
+
+
+def _pipeline_to_decision_log(stages: list[PlanPipelineStage]) -> list[DecisionLogEntry]:
+    out: list[DecisionLogEntry] = []
+    now = datetime.now(timezone.utc).isoformat()
+    for s in stages:
+        out.append(
+            DecisionLogEntry(
+                timestamp=now,
+                agent="planner",
+                decision="plan_pipeline_stage",
+                source=s.source,
+                target=s.name,
+                reason=s.detail or s.name,
+                evidence="",
+                fingerprint="",
+                overridden=False,
+            )
+        )
+    return out
 
 
 def parse_plan_json(text: str) -> dict[str, Any]:
@@ -166,6 +201,231 @@ def adjust_plan_theory_only(steps: list[PlanStep], report_text: str) -> list[Pla
         if mod in drop or mod == "render_uml":
             continue
         out.append(step)
+    return out
+
+
+def build_mixed_assignment_plan(assignment_questions: list[dict]) -> list[PlanStep]:
+    """O10/R8: run solve steps in document order; full paper stays in planner_input."""
+    steps: list[PlanStep] = []
+    ordered = sorted(assignment_questions, key=lambda q: int(q.get("id") or 0))
+    for q in ordered:
+        q_type = q.get("type") or "theory"
+        seg_id = q.get("id")
+        title = (q.get("title") or "").strip()
+        full_text = (q.get("full_text") or "").strip()
+        if not full_text:
+            continue
+        base_params: dict[str, Any] = {
+            "segment_id": seg_id,
+            "segment_title": title,
+            "segment_text": full_text,
+            "include_full_context": True,
+        }
+        if q_type == "code_cloze":
+            cloze = (q.get("metadata") or {}).get("code_cloze") or {}
+            steps.append(
+                PlanStep(
+                    module="solve_code_cloze",
+                    params={
+                        **base_params,
+                        "language": cloze.get("language_hint") or "",
+                    },
+                    reason=f"混排卷代码填空：{title or seg_id}",
+                    evidence=f"blanks={cloze.get('blank_count') or 0}",
+                    source="rule",
+                    confidence="high",
+                    default_checked=True,
+                )
+            )
+        elif q_type == "theory":
+            steps.append(
+                PlanStep(
+                    module="solve_theory",
+                    params=base_params,
+                    reason=f"混排卷简答：{title or seg_id}",
+                    evidence="",
+                    source="rule",
+                    confidence="high",
+                    default_checked=True,
+                )
+            )
+    steps.append(
+        PlanStep(
+            module="present_deliverable",
+            params={},
+            reason="汇编混排卷各段答案",
+            evidence="",
+            source="rule",
+            confidence="high",
+            default_checked=True,
+        )
+    )
+    return steps
+
+
+def adjust_plan_for_mixed_assignment(
+    steps: list[PlanStep],
+    *,
+    metadata: dict | None,
+) -> list[PlanStep]:
+    if not (metadata or {}).get("mixed_assignment"):
+        return steps
+    questions = (metadata or {}).get("assignment_questions") or []
+    if len(questions) < 2:
+        return steps
+    return build_mixed_assignment_plan(questions)
+
+
+def adjust_plan_for_code_cloze(
+    steps: list[PlanStep],
+    *,
+    metadata: dict | None,
+) -> list[PlanStep]:
+    if (metadata or {}).get("mixed_assignment"):
+        return steps
+    cloze = (metadata or {}).get("code_cloze") or {}
+    q_type = (metadata or {}).get("question_type") or ""
+    if q_type != "code_cloze":
+        if not cloze.get("is_code_cloze"):
+            return steps
+    keep_modules = {"solve_code_cloze", "present_deliverable"}
+    kept = [s for s in steps if (s.get("module") or "") in keep_modules]
+    if not any((s.get("module") or "") == "solve_code_cloze" for s in kept):
+        kept.insert(
+            0,
+            PlanStep(
+                module="solve_code_cloze",
+                params={"language": (cloze.get("language_hint") if isinstance(cloze, dict) else "") or ""},
+                reason="检测到代码完形填空（编号空 + 代码特征）",
+                evidence=f"blank_count={(cloze.get('blank_count') if isinstance(cloze, dict) else 0)}",
+                source="rule",
+                confidence="high",
+                default_checked=True,
+            ),
+        )
+    if not any((s.get("module") or "") == "present_deliverable" for s in kept):
+        kept.append(
+            PlanStep(
+                module="present_deliverable",
+                params={},
+                reason="汇编代码填空答案交付物",
+                evidence="",
+                source="rule",
+                confidence="high",
+                default_checked=True,
+            )
+        )
+    return kept
+
+
+def adjust_plan_for_short_answer(
+    steps: list[PlanStep],
+    *,
+    metadata: dict | None,
+) -> list[PlanStep]:
+    if (metadata or {}).get("mixed_assignment"):
+        return steps
+    q_type = ((metadata or {}).get("question_type") or "").strip().lower()
+    if q_type != "short_answer":
+        return steps
+    keep_modules = {"solve_short_answer", "present_deliverable"}
+    kept = [s for s in steps if (s.get("module") or "") in keep_modules]
+    if not any((s.get("module") or "") == "solve_short_answer" for s in kept):
+        kept.insert(
+            0,
+            PlanStep(
+                module="solve_short_answer",
+                params={},
+                reason="检测到纯简答题卷",
+                evidence="question_type=short_answer",
+                source="rule",
+                confidence="high",
+                default_checked=True,
+            ),
+        )
+    if not any((s.get("module") or "") == "present_deliverable" for s in kept):
+        kept.append(
+            PlanStep(
+                module="present_deliverable",
+                params={},
+                reason="汇编简答题答案交付物",
+                evidence="",
+                source="rule",
+                confidence="high",
+                default_checked=True,
+            ),
+        )
+    return kept
+
+
+def apply_question_type_overrides(
+    plan: PlanResult,
+    *,
+    metadata: Optional[dict] = None,
+    question_type: str = "",
+) -> PlanResult:
+    """
+    Apply deterministic question-type routing rules on top of planner/deep output.
+
+    IR-6: keep source-specific routing logic in planner layer (not server route body).
+    """
+    out: PlanResult = dict(plan or {})
+    steps = list(out.get("steps") or [])
+    q_type = (question_type or (metadata or {}).get("question_type") or "").strip().lower()
+
+    decision_log = list(out.get("decision_log") or [])
+    if (metadata or {}).get("mixed_assignment"):
+        questions = (metadata or {}).get("assignment_questions") or []
+        steps = build_mixed_assignment_plan(questions)
+        out["clarifications"] = []
+        decision_log.append(
+            DecisionLogEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                agent="planner",
+                decision="plan_override",
+                source="rule",
+                target="mixed_assignment",
+                reason=f"override to mixed_assignment steps={len(steps)}",
+                evidence="",
+                fingerprint=out.get("plan_fingerprint") or "",
+                overridden=True,
+            )
+        )
+    elif q_type == "code_cloze":
+        steps = adjust_plan_for_code_cloze(steps, metadata=metadata)
+        out["clarifications"] = []
+        decision_log.append(
+            DecisionLogEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                agent="planner",
+                decision="plan_override",
+                source="rule",
+                target="code_cloze",
+                reason=f"override to code_cloze steps={len(steps)}",
+                evidence="",
+                fingerprint=out.get("plan_fingerprint") or "",
+                overridden=True,
+            )
+        )
+    elif q_type == "short_answer":
+        steps = adjust_plan_for_short_answer(steps, metadata=metadata)
+        out["clarifications"] = []
+        decision_log.append(
+            DecisionLogEntry(
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                agent="planner",
+                decision="plan_override",
+                source="rule",
+                target="short_answer",
+                reason=f"override to short_answer steps={len(steps)}",
+                evidence="",
+                fingerprint=out.get("plan_fingerprint") or "",
+                overridden=True,
+            )
+        )
+
+    out["steps"] = steps
+    out["decision_log"] = decision_log
     return out
 
 
@@ -483,6 +743,13 @@ def plan_from_report(
         (settings or {}).get("user_constraints") or (settings or {}).get("userConstraints")
     )
     v4_pipeline = should_use_pipeline(settings)
+    pipeline_stages: list[PlanPipelineStage] = []
+    _record_plan_stage(
+        pipeline_stages,
+        "input",
+        "prepare_prompt",
+        f"v4={v4_pipeline} skip_validation={should_skip_validation(user_constraints)}",
+    )
 
     budgeted_text = fit_budget(
         text,
@@ -515,21 +782,36 @@ def plan_from_report(
             phase="planner",
         )
         raw = parse_plan_json(chat_result.get("content") or "")
+        _record_plan_stage(pipeline_stages, "llm", "parse_plan_json", "planner LLM output parsed")
         steps, clarifications = normalize_plan(raw, profile_norm)
+        _record_plan_stage(
+            pipeline_stages,
+            "llm",
+            "normalize_plan",
+            f"steps={len(steps)} clarifications={len(clarifications)}",
+        )
         dneeds = diagram_needs if diagram_needs is not None else _infer_diagram_needs(text)
         if not steps:
             steps = _fallback_plan(text, profile_norm, needs_uml, dneeds)
+            _record_plan_stage(pipeline_stages, "fallback", "fallback_plan", "llm steps empty")
             logi("planner", "LLM 计划为空，使用 fallback 步骤")
     except Exception as e:
         loge("planner", str(e))
         dneeds = diagram_needs if diagram_needs is not None else _infer_diagram_needs(text)
         steps = _fallback_plan(text, profile_norm, needs_uml, dneeds)
         clarifications = []
+        _record_plan_stage(pipeline_stages, "fallback", "fallback_plan", f"planner error: {type(e).__name__}")
 
     from agent.user_profile import apply_behavior_to_steps
 
     steps = apply_behavior_to_steps(steps, profile_norm)
+    _record_plan_stage(pipeline_stages, "behavior", "apply_behavior", f"steps={len(steps)}")
     steps = adjust_plan_v4_aware(steps, settings, text, user_constraints)
+    _record_plan_stage(pipeline_stages, "rule", "adjust_v4_aware", f"steps={len(steps)}")
+    steps = adjust_plan_for_mixed_assignment(steps, metadata=metadata)
+    _record_plan_stage(pipeline_stages, "rule", "adjust_mixed_assignment", f"steps={len(steps)}")
+    steps = adjust_plan_for_code_cloze(steps, metadata=metadata)
+    _record_plan_stage(pipeline_stages, "rule", "adjust_code_cloze", f"steps={len(steps)}")
 
     doc_ids = document_ids
     if doc_ids is None and metadata:
@@ -547,6 +829,7 @@ def plan_from_report(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "agent": "planner",
         "decision": "plan_generated",
+        "source": "planner",
         "target": "plan",
         "reason": f"{len(steps)} steps, modules={[s['module'] for s in steps]}",
         "evidence": "",
@@ -563,7 +846,7 @@ def plan_from_report(
         plan_fingerprint=fingerprint,
         clarifications=clarifications,
         prompt_version=prompt_version,
-        decision_log=[decision],
+        decision_log=[*_pipeline_to_decision_log(pipeline_stages), decision],
     )
 
 
@@ -585,7 +868,7 @@ def make_agent_context(
         "question": question or {},
         "settings": settings,
         "user_profile": normalize_profile(profile),
-        "prompt_versions": {"planner": PROMPTS["planner"].version},
+        "prompt_versions": {},
         "module_results": {},
         "dirty_modules": [],
         "dirty_fields": {},
@@ -597,7 +880,64 @@ def make_agent_context(
         ctx["plan"] = plan
     if format_spec:
         ctx["format_spec"] = format_spec
+    from agent.prompts import record_plan_prompt_version
+
+    record_plan_prompt_version(ctx, plan)
     return ctx
+
+
+def _replan_steps_for_failure(
+    failed: str,
+    error_summary: str,
+    *,
+    error_category: str = "",
+    ctx: dict,
+) -> list[PlanStep]:
+    """Rule-based replan inserts keyed by failed module + error_category (IR-12)."""
+    profile = ctx.get("user_profile") or _DEFAULT_PROFILE
+    summary = (error_summary or "")[:200]
+    category = (error_category or "").strip().lower()
+    steps: list[PlanStep] = []
+
+    def _add(
+        module: str,
+        params: dict | None,
+        reason: str,
+        *,
+        confidence: str = "medium",
+    ) -> None:
+        if module in {s.get("module") for s in steps}:
+            return
+        steps.append(
+            PlanStep(
+                module=module,
+                params=dict(params or {}),
+                reason=reason,
+                evidence="",
+                source="replan",
+                confidence=confidence,
+                default_checked=True,
+            )
+        )
+
+    if failed == "run_code":
+        label = category or "error"
+        _add("fix_code", {}, f"run_code 失败（{label}），插入修代码: {summary}")
+    elif failed == "fix_code":
+        _add("run_code", {}, f"fix_code 后重试 run_code: {summary}")
+    elif failed == "render_uml":
+        _add("fix_diagrams", {}, f"render_uml 失败，修正 diagrams: {summary}")
+        _add("render_uml", {}, "fix_diagrams 后重新渲染 UML", confidence="high")
+    elif failed == "fix_diagrams":
+        _add("render_uml", {}, f"fix_diagrams 后重试 render_uml: {summary}", confidence="high")
+    elif failed == "solve_lab":
+        _add(
+            "solve_lab",
+            {"language": profile.get("default_language", "java")},
+            f"solve_lab 失败，重试: {summary}",
+            confidence="low",
+        )
+    return steps
 
 
 def replan_incremental(
@@ -608,22 +948,24 @@ def replan_incremental(
 ) -> PlanResult:
     """
     Replace only steps not yet completed after consecutive module failures.
-    max_replan_rounds=1 per run.
+    Respects ctx/settings max_replan_rounds (default 1).
     """
+    max_rounds = max_replan_rounds_for_ctx(ctx)
     rounds = int(ctx.get("replan_rounds") or 0)
-    if rounds >= MAX_REPLAN_ROUNDS:
+    if rounds >= max_rounds:
         append_decision(
             ctx,
             agent="planner",
             decision="replan_skipped",
             target="plan",
-            reason=f"已达 max_replan_rounds={MAX_REPLAN_ROUNDS}",
+            reason=f"已达 max_replan_rounds={max_rounds}",
             emit=emit,
         )
         return ctx.get("plan") or PlanResult(steps=[], plan_fingerprint="")
 
     failed = replan_context.get("failed_module") or ""
     error_summary = (replan_context.get("error_summary") or "")[:200]
+    error_category = (replan_context.get("error_category") or "").strip().lower()
     completed = set(replan_context.get("completed_modules") or [])
 
     old_steps = list(
@@ -639,31 +981,17 @@ def replan_incremental(
             continue
         new_steps.append(step)
 
-    if failed == "run_code" and "fix_code" not in {s.get("module") for s in new_steps}:
-        new_steps.append(
-            PlanStep(
-                module="fix_code",
-                params={},
-                reason=f"run_code 连续失败，插入修代码步骤: {error_summary}",
-                evidence="",
-                source="replan",
-                confidence="medium",
-                default_checked=True,
-            )
-        )
-    elif failed == "solve_lab" and not any(s.get("module") == "solve_lab" for s in new_steps):
-        profile = ctx.get("user_profile") or _DEFAULT_PROFILE
-        new_steps.append(
-            PlanStep(
-                module="solve_lab",
-                params={"language": profile.get("default_language", "java")},
-                reason=f"solve_lab 失败，重试: {error_summary}",
-                evidence="",
-                source="replan",
-                confidence="low",
-                default_checked=True,
-            )
-        )
+    existing_mods = {s.get("module") for s in new_steps}
+    for step in _replan_steps_for_failure(
+        failed,
+        error_summary,
+        error_category=error_category,
+        ctx=ctx,
+    ):
+        mod = step.get("module") or ""
+        if mod and mod not in existing_mods:
+            new_steps.append(step)
+            existing_mods.add(mod)
 
     if not new_steps:
         new_steps = _fallback_plan(
@@ -692,13 +1020,16 @@ def replan_incremental(
     ctx["confirmed_steps"] = new_steps
     ctx["replan_rounds"] = rounds + 1
     ctx["consecutive_failures"] = 0
+    from agent.prompts import record_prompt_version
+
+    record_prompt_version(ctx, "planner")
 
     append_decision(
         ctx,
         agent="planner",
         decision="replan_incremental",
         target=failed or "plan",
-        reason=f"替换未执行步骤，剩余 {len(new_steps)} 步",
+        reason=f"替换未执行步骤，剩余 {len(new_steps)} 步（category={error_category or 'n/a'}）",
         fingerprint=fingerprint,
         emit=emit,
     )

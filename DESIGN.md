@@ -191,11 +191,11 @@
 ┌──────────────────────────────────────────────────────────────┐
 │ 答案工作区                    [回到主页]（完成后） [← 返回]   │
 ├──────────────────────────────────────────────────────────────┤
-│ [已验证] 说明文字              [Markdown][docx][zip…]（次要）  │
+│ [已验证] 说明文字              [导出 ▾][docx]（次要）           │
 ├──────────┬─────────────────────────────┬─────────────────────┤
-│ 报告结构 │  本节标题      [复制本节]★  │ 代码 │ 图表  [收起]  │
+│ 报告结构 │  本节标题      [复制本节]★  │ 代码│图表 [复制]★[收起]│
 │ ──────── │  ─────────────────────────  │ ─────────────────── │
-│ 步骤/分析│  报告正文（max 72ch）       │  代码块 / UML 缩略图 │
+│ 步骤/分析│  报告正文（max 72ch）       │  代码块 / 图 + 逐张复制│
 │ 结果说明 │                             │                     │
 │ 总结     │                             │                     │
 ├──────────┴─────────────────────────────┴─────────────────────┤
@@ -214,6 +214,7 @@
 
 - Phase 1：拖拽区加大、role chip、文档表格、主 CTA 在清单栏
 - **P2-A**（2026-06-06）：`.step1-grid` 宽屏 `5fr 7fr` 双栏 — 左 `#uploadArea` hero · 右 `#documentListPanel`（flex + sticky「解析并继续」）；范文 `<details id="step1TemplateFold">` 默认折叠；拆分预览在 `.step1-secondary` 全宽；`setStep1PrimaryMode` 避免拆分态双 primary。详见 [UI_PHASE2_PACK_A.md](docs/design/UI_PHASE2_PACK_A.md)
+- **粘贴优先**（2026-06-08）：左栏默认 **「粘贴题目」** 标签 — `#uploadPasteText` 内联文本框 +「添加到清单」（`Ctrl+Enter`）；**仅粘贴文字即可解析**（`layout=assignment_only`，`fill_target` 可为 null），无需上传文件；「上传文件」标签保留拖拽/多文档流程（后端 BF44 修复 `parse-report` 空 `fill_target` 崩溃）
 - 窄屏 &lt;960px：`.step1-grid` 恢复单列
 
 ### P2 — Step 2 计划确认（Phase 1 ✅ · Phase 2 P2-B ✅）
@@ -264,7 +265,7 @@
    - 标题栏窗口控件 `─ □ ✕` 保留（系统 chrome，非装饰 emoji）
 2. **UI-2** ✅ Step3 三栏布局（2026-06-06）
    - `#deliverable-workspace`：左 `deliverable-nav` · 中 `deliverable-section-body` · 右 `deliverable-preview-col`
-   - 主操作「复制本节」居中栏；导出按钮降为 toolbar 次要
+   - 主操作「复制本节」居中栏；右预览栏「复制代码 / 复制图表」；导出 zip 降为 dropdown 次要
    - 窄屏右栏可折叠（`preview-open` + backdrop）
 3. **UI-3** ✅ Step1 上传 + Step2 高级折叠（2026-06-06）
    - Step1：`upload-area` 加大、role chip 色点 pill、`document-table` 三列清单
@@ -343,3 +344,17 @@ Phase 2 完成后的 UI 复审：不改 Step 3 三栏结构，聚焦复制体验
 | `--accent-hover` | `#79b8ff` | `#8ab4ff` |
 | `--accent-dim` | `#1f4e8c` | `#2a4a7a` |
 | `--shadow-accent` | `rgba(88,166,255,0.15)` | `rgba(107,159,255,0.15)` |
+
+---
+
+## 13. 逐屏 UI 优化（2026-06-08 起）
+
+一屏一文档、一 PR。
+
+| 界面 | 文档 | 状态 |
+|------|------|------|
+| 首页 Step 1 | [UI_SCREEN_HOME.md](docs/design/UI_SCREEN_HOME.md) | ✅ 首版 |
+| Step 2 计划确认 | Step2 模式说明条 `#step2ModeBanner`（见 [STANDARD_MODE_QUALITY.md](docs/design/STANDARD_MODE_QUALITY.md)） | ✅ 质量条 |
+| Step 3 答案工作区 | — | 已定稿，仅 bugfix |
+
+**标准模式质量感知**（非纯 UI）：[STANDARD_MODE_QUALITY.md](docs/design/STANDARD_MODE_QUALITY.md)

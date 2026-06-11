@@ -733,7 +733,7 @@ PDF **难以**像 Word 一样按节精确回填（版式、字体、分页不可
 | 用户手里的文件                 | 建议角色 `doc_role`   | 系统用途                                    |
 | ----------------------- | ----------------- | --------------------------------------- |
 | 老师发的实验**题目/要求**（无空白三四五） | `assignment`      | Planner **主证据**：做什么、要不要代码/截图/UML        |
-| **超星 / 慕课等平台作业页复制文字**（无独立题目文件） | `assignment`      | 同上；Step 1 **「粘贴题目 / 要求」** 直接加入清单，无需先存 `.txt` |
+| **超星 / 慕课等平台作业页复制文字**（无独立题目文件） | `assignment`      | 同上；Step 1 默认 **「粘贴题目」** 内联文本框加入清单（`text_content`），**无需上传任何文件** |
 | 空白或半空白**实验报告**（要交的那份）   | `fill_target`     | **填表对象**；`section_map`、preserve/skip 检测 |
 | **答题模版 / 范文**（格式参考）     | `answer_template` | → `format_spec`、模版约束建议                  |
 | 参考资料、数据说明等（可选）          | `reference`       | 补充上下文，进 prompt 附录，**不**直接覆盖 fill_target |
@@ -741,7 +741,8 @@ PDF **难以**像 Word 一样按节精确回填（版式、字体、分页不可
 
 **硬规则**：
 
-- 必须有 **且仅有 1 个** `fill_target`（否则无法 `fill_report`）；可另挂 0~N 个其它角色。
+- **默认主路径（`output_mode=deliverable`）**：可 **仅** 上传/粘贴 `assignment`（`layout=assignment_only`），**不必** 有 `fill_target`；答案在 Step 3 工作区复制。
+- **填表路径（`fill_original` / `new_document`）**：必须有 **且仅有 1 个** `fill_target`（否则无法 `fill_report`）；可另挂 0~N 个其它角色。
 - 若用户只传 1 个文件：自动猜角色（见下）；猜错可在列表里改下拉。
 - **冲突**：`assignment` 与 `fill_target` 对同一要求说法不一 → **以 `assignment` 为准** 定「做不做」；**以 `fill_target`** 定「填哪一节、版式」。
 
@@ -805,12 +806,12 @@ flowchart LR
 
 #### Step 1 UI —「文档清单」（取代「一个必填 + 一个可选」）
 
-- **添加文档**（可多选 docx/pdf），列表每行：
-  - 文件名 | **角色下拉**（题目 / 待填报告 / 答题模版 / 参考资料）| 删除
-  - 行尾显示解析摘要（页数、是否像扫描 PDF、是否检测到三四五）
-- **粘贴题目 / 要求**（2026-06-05）：弹窗粘贴超星等平台作业全文，默认角色「题目 / 要求」；清单中显示 📋 与字数；与空白报告 docx 组合解析时合并为 `【实验要求】` + `【待填报告】`。
-- **校验**：未选 `fill_target` 时禁用「生成计划」；`fill_target` >1 时红字提示只能一份。
-- **快捷**：「我有题目 + 空白报告」→ 下载空白模板 + 粘贴作业说明，或两文件上传；第三行可选模版。
+- **左栏双模式**（2026-06-08，默认「粘贴题目」）：
+  - **粘贴题目**：`#uploadPasteText` 内联文本框 →「添加到清单」（`Ctrl+Enter`）；默认角色 `assignment`；**仅文字即可点「解析并继续」**，无需 docx。
+  - **上传文件**：拖拽/多选 docx/pdf；role chip 提示四种角色。
+- **文档清单**（右栏）：每行 文件名 | **角色下拉** | 删除；粘贴项显示「粘贴：…」与字数；解析后显示角色 badge。
+- **校验**：`fill_target` >1 时红字提示只能一份；无 `fill_target` 时 **禁用「填回原文档」** 输出方式，**不** 阻塞 deliverable 主路径的计划与执行。
+- **快捷**：「我有题目 + 空白报告」→ 粘贴作业说明 + 上传空白 docx（可切「上传文件」）；第三行可选模版。
 - 与 §3g：题目可为 pdf、粘贴文字、待填可为 docx，角色与扩展名无关。
 
 #### API
@@ -818,8 +819,8 @@ flowchart LR
 
 | 路由                       | 变化                                                       |
 | ------------------------ | -------------------------------------------------------- |
-| `POST /api/parse-report` | body 为 `documents[]`（每项 `file_data` 或 `text_content` 二选一）；兼容旧版单 `file_data` 视为 `fill_target` |
-| `POST /api/agent/plan`   | 携带解析后的 `documents` 摘要 + `fill_target.id`                 |
+| `POST /api/parse-report` | body 为 `documents[]`（每项 `file_data` 或 `text_content` 二选一）；兼容旧版单 `file_data` 视为 `fill_target`；**`assignment_only` 时响应 `fill_target: null`**，`split_at_heading` 为空（BF44：不可对 `fill_target` 直接 `.get`） |
+| `POST /api/agent/plan`   | 携带解析后的 `documents` 摘要；有 `fill_target` 时带 `fill_target.id`                 |
 
 
 #### 单文件合体：题目 + 待填在同一份 docx（常见校内模版）
@@ -1086,8 +1087,9 @@ early_exit_conditions = [
 
 | 工具 | 映射模块 | 说明 |
 |------|----------|------|
-| `solve_lab` | `solve_lab` | 生成答案（含代码、UML PlantUML 源码） |
-| `run_code` | `run_code` | 编译运行（**可选**；多文件 Java 易失败） |
+| `solve_lab` | `solve_lab` | 生成实验报告答案（含代码、UML PlantUML 源码） |
+| **`solve_code_cloze`** | `solve_code_cloze` | **代码完形填空**：按空号输出 `blanks` JSON（2026-06-08；BF49） |
+| `run_code` | `run_code` | 编译运行（**可选**；`code_cloze` 题型勿用） |
 | `fix_code` | `fix_code` | 根据 run_code 错误修代码（建议 ≤3 轮） |
 | `render_uml` | `render_uml` | 渲染 diagrams → PNG（**不依赖** run_code 成功） |
 | `fix_diagrams` | `fix_diagrams` | render_uml 验错失败时 LLM 修订 diagrams |
@@ -1097,6 +1099,11 @@ early_exit_conditions = [
 | `done` | — | 结束循环 |
 
 **推荐流程**（见 `react_prompts.py`）：
+
+- **实验报告**（默认）：`solve_lab` → `render_uml` → 可选 `run_code`/`fix_code` → `present_deliverable` → `done`
+- **`code_cloze`**（检测/计划命中）：bootstrap `solve_code_cloze` → `present_deliverable` → `done`（**禁止** `solve_lab` / `run_code`）
+
+标准实验报告步骤：
 
 1. `solve_lab`（`include_uml: true` 若需类图）
 2. **尽早** `render_uml`（有 diagrams 时）
@@ -1112,7 +1119,7 @@ flowchart LR
   Fin[react_finalize_pipeline]
   Dlv[答案工作区 / 可选填表]
 
-  Loop -->|solve_lab 成功| Fin
+  Loop -->|solve_lab 或 solve_code_cloze 成功| Fin
   Fin -->|补跑缺失| render_uml
   Fin --> present_deliverable
   Fin --> fill_report
@@ -1325,8 +1332,8 @@ flowchart TD
 ### Step 1 增强：多文档清单（见 §3h）
 
 - **文档清单**：可添加多份 .docx / .pdf，每份指定角色（**题目** / **待填报告** / **答题模版** / **参考资料**）。
-- **粘贴题目**：无需文件即可添加 `assignment` / `reference`（`text_content` API）；典型场景为「空模板 docx + 超星作业页复制」。
-- **必填**：恰好 1 份「待填报告」；题目、模版可选但强烈建议分开传（文件或粘贴均可）。
+- **粘贴题目**：无需文件即可添加 `assignment` / `reference`（`text_content` API）；典型场景为「仅超星作业页复制文字」或「空模板 docx + 粘贴题目」。
+- **必填（填表）**：恰好 1 份「待填报告」；**deliverable 主路径** 可仅题目（文件或粘贴）。
 - 快捷入口：「题目 + 空白报告」两槽；PDF 导出说明（§3g）；模版格式在 Step 2 以行内标签展示。
 
 ### Step 2 增强：分节工作台 + 计划预览
