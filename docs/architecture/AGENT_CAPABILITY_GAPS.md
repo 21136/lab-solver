@@ -1,7 +1,7 @@
 # Agent 能力短板评估
 
 **版本**: 2026-06-12  
-**状态**: 📋 评审稿（基于代码库与既有架构文档只读对齐）  
+**状态**: 🚧 补强实施中（§6 顺序 1～4 ✅ · 5 部分 ✅）  
 **定位**: 在 V3 编排收敛、AO-P0～P3、IR-1～IR-21 已落地之后，**客观列出 Agent 层相对薄弱的环节**，与强项对照，并给出可执行的补强顺序。  
 **关联**: [AGENT_ARCHITECTURE_V3.md](AGENT_ARCHITECTURE_V3.md) · [AGENT_OPTIMIZATION_PLAN.md](AGENT_OPTIMIZATION_PLAN.md) · [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](AGENT_IMPROVEMENT_RECOMMENDATIONS.md) · [NEXT_VERSION_BACKLOG.md](../product/NEXT_VERSION_BACKLOG.md) §C2 · [AI_INSIGHTS.md](../reference/AI_INSIGHTS.md)
 

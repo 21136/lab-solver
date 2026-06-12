@@ -210,6 +210,11 @@ def planner_module_catalog() -> frozenset[str]:
     return frozenset(s.id for s in MODULE_REGISTRY.values() if s.planner_visible)
 
 
+def replan_module_catalog() -> frozenset[str]:
+    """Planner-visible modules plus failure-recovery modules for LLM replan."""
+    return planner_module_catalog() | frozenset({"fix_code", "fix_diagrams"})
+
+
 def known_module_ids() -> frozenset[str]:
     """All registered module IDs (types.KNOWN_MODULE_IDS replacement)."""
     return frozenset(MODULE_REGISTRY.keys())
