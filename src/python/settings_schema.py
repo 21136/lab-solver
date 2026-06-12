@@ -1,6 +1,6 @@
 """Settings schema version for Electron localStorage migration."""
 
-SETTINGS_SCHEMA_VERSION = 11
+SETTINGS_SCHEMA_VERSION = 12
 
 SETTINGS_DEFAULTS = {
     "schema_version": SETTINGS_SCHEMA_VERSION,
@@ -45,4 +45,6 @@ SETTINGS_DEFAULTS = {
     "optimizePlanFromUsage": True,
     # AGENT_CAPABILITY_GAPS: optional LLM replan on module failure
     "llmReplan": True,
+    # Skill auto-promote: error_category candidates → promoted_skills.json (local)
+    "autoPromoteSkills": True,
 }

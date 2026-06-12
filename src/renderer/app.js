@@ -5198,6 +5198,10 @@ function resolveLlmReplanForRun() {
   return readSettings().llmReplan !== false;
 }
 
+function resolveAutoPromoteSkillsForRun() {
+  return readSettings().autoPromoteSkills !== false;
+}
+
 async function recordBehaviorOutcome(event, meta = {}) {
   if (!event) return;
   try {
@@ -5746,6 +5750,7 @@ async function executeAgentPlan() {
       auto_remediate_max_rounds: resolveAutoRemediateMaxRoundsForRun(),
       max_replan_rounds: resolveMaxReplanRoundsForRun(),
       llm_replan: resolveLlmReplanForRun(),
+      auto_promote_skills: readSettings().autoPromoteSkills !== false,
       sections_config: collectSectionsConfigForApi(),
       split_idx: agentSplitIdx,
       format_spec: agentFormatSpec || undefined,
@@ -8789,7 +8794,7 @@ function renderHistory() {
 // 设置
 // ============================
 
-const SETTINGS_SCHEMA_VERSION = 11;
+const SETTINGS_SCHEMA_VERSION = 12;
 let _runtimeApiKey = '';
 let _encryptionAvailable = false;
 let _fallbackNotified = false;
@@ -9059,6 +9064,7 @@ function mergeSettings(saved) {
     showThoughtTrace: saved.showThoughtTrace === true,
     optimizePlanFromUsage: saved.optimizePlanFromUsage !== false,
     llmReplan: saved.llmReplan !== false,
+    autoPromoteSkills: saved.autoPromoteSkills !== false,
     autoRemediate: saved.autoRemediate !== false,
     autoRemediateMaxRounds: Number.isFinite(Number(saved.autoRemediateMaxRounds))
       ? Math.max(0, Math.min(5, Number(saved.autoRemediateMaxRounds)))
@@ -9142,6 +9148,12 @@ function mergeSettings(saved) {
         merged.llmReplan = true;
       }
     }
+    if (version < 12) {
+      if (saved.autoPromoteSkills === undefined) {
+        migration.autoPromoteSkills = true;
+        merged.autoPromoteSkills = true;
+      }
+    }
     persistSettingsPatch(migration);
   }
   return merged;
@@ -9177,6 +9189,8 @@ function applySettingsToForm(settings) {
   if (thoughtEl) thoughtEl.checked = settings.showThoughtTrace;
   const optimizeEl = document.getElementById('optimizePlanFromUsageSettings');
   if (optimizeEl) optimizeEl.checked = settings.optimizePlanFromUsage !== false;
+  const autoPromoteEl = document.getElementById('autoPromoteSkillsSettings');
+  if (autoPromoteEl) autoPromoteEl.checked = settings.autoPromoteSkills !== false;
   const autoRemediateEl = document.getElementById('autoRemediateSettings');
   if (autoRemediateEl) autoRemediateEl.checked = settings.autoRemediate !== false;
   const autoRemediateRoundsEl = document.getElementById('autoRemediateMaxRoundsSettings');
@@ -9350,6 +9364,7 @@ async function saveSettings() {
     experimentalReactMode: getExperimentalReactMode(),
     showThoughtTrace: document.getElementById('showThoughtTraceSettings')?.checked === true,
     optimizePlanFromUsage: document.getElementById('optimizePlanFromUsageSettings')?.checked === true,
+    autoPromoteSkills: document.getElementById('autoPromoteSkillsSettings')?.checked !== false,
     autoRemediate: document.getElementById('autoRemediateSettings')?.checked === true,
     autoRemediateMaxRounds: getAutoRemediateMaxRounds(),
     maxReplanRounds: getMaxReplanRounds(),

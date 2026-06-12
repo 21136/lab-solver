@@ -1282,6 +1282,13 @@ def agent_run():
         else:
             settings_llm = (ctx.get("settings") or {}).get("llmReplan")
             ctx["llm_replan"] = settings_llm is not False
+        if "auto_promote_skills" in data:
+            ctx["auto_promote_skills"] = bool(data.get("auto_promote_skills"))
+        elif "autoPromoteSkills" in data:
+            ctx["auto_promote_skills"] = bool(data.get("autoPromoteSkills"))
+        else:
+            settings_promote = (ctx.get("settings") or {}).get("autoPromoteSkills")
+            ctx["auto_promote_skills"] = settings_promote is not False
         ctx["replan_rounds"] = 0
         ctx["understand"] = data.get("understand") or {}
         if data.get("module_results"):

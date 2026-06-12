@@ -966,9 +966,16 @@
                   >
                   <span class="form-hint">连续模块失败时规则化调整计划；0 表示不 replan</span>
                 </div>
+                <div class="form-group">
+                  <label>
+                    <input type="checkbox" id="autoPromoteSkillsSettings" checked>
+                    重复错误自动晋升为技能（本地）
+                  </label>
+                  <span class="form-hint">默认开启：7 天内同类 run_code 错误达 2 次即写入 promoted_skills.json；notes 类候选仍需手动确认</span>
+                </div>
                 <div class="form-group settings-advanced-block" id="skillCandidatesPanel">
-                  <h4 class="settings-subheading">技能候选（半自动 promote）</h4>
-                  <p class="form-hint">运行中重复出现的错误分类 / notes 会写入本地 skill_candidates.json；确认后可一键注册为技能。</p>
+                  <h4 class="settings-subheading">技能候选</h4>
+                  <p class="form-hint">运行信号写入本地 skill_candidates.json；未自动晋升的候选可手动「写入 skill_store」。</p>
                   <div id="skillCandidatesList" class="skill-candidates-list" role="list"></div>
                   <button type="button" class="btn-secondary btn-sm" id="skillCandidatesRefreshBtn" onclick="refreshSkillCandidates()">刷新候选</button>
                 </div>

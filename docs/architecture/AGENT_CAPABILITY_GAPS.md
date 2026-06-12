@@ -124,7 +124,7 @@ solve_lab 失败    → 原样重试 solve_lab（confidence=low）
 | 行为统计写入 profile | `user_profile.behavior.*` | ⚠️ 需 `apply_to_profile=true` |
 | Planner 消费行为 | `apply_behavior_to_steps` | ⚠️ 需 `optimize_plan_from_usage=true`（**默认关**） |
 | 技能注入 | `skill_store.py`（3 内置 + promote 文件） | ✅ 匹配即注入 prompt |
-| 技能晋升 | `AI_INSIGHTS.md` → 人工编辑 → `promoted_skills.json` | ❌ 半自动 |
+| 技能晋升 | 达阈值自动 promote `error_category` + 手动 promote notes | ✅ 默认 on |
 | 结果反馈 | Keep rate（复制/导出/revise 满意度） | ❌ backlog |
 
 #### 典型风险
@@ -223,7 +223,7 @@ solve_lab 失败    → 原样重试 solve_lab（confidence=low）
 |------|------|------|
 | Keep rate | 用户复制章节 / 导出 / revise 标签 → 本地统计 | backlog |
 | IR-25 | 从 `run_events/*.jsonl` 聚合 pass rate、token、phase 耗时 | backlog |
-| IR-18 | theory / mixed / cloze / training_table plan→run 矩阵 | backlog |
+| IR-18 | theory / mixed / cloze / training_table plan→run 矩阵 | ✅ |
 | CI | GitHub Actions 跑 pytest（无真实 LLM） | backlog §3 |
 
 #### 关键文件

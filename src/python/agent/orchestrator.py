@@ -737,6 +737,7 @@ class RunOrchestrator:
             "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
             "keep_rate": keep_rate,
             "run_outcomes": run_outcomes,
+            "skills_auto_promoted": list(self.ctx.get("skills_auto_promoted") or []),
         }
 
 
