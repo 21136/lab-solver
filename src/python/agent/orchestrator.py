@@ -714,6 +714,12 @@ class RunOrchestrator:
             or solve_session.get("code_status")
             or solve_data_meta.get("code_status")
         )
+        from agent.user_profile import compute_keep_rate_summary, load_profile, merge_profile
+
+        profile = merge_profile(load_profile(), self.ctx.get("user_profile"))
+        keep_rate = compute_keep_rate_summary(profile)
+        run_outcomes = list(self.ctx.get("run_outcomes") or [])
+
         return {
             "mode": mode,
             "solve_quality_tier": resolve_solve_quality_tier(settings, self.ctx),
@@ -723,11 +729,15 @@ class RunOrchestrator:
             "llm_calls_by_phase": get_llm_calls_by_phase(),
             "prompt_versions": dict(self.ctx.get("prompt_versions") or {}),
             "replan_count": self.replan_count,
+            "llm_replan_used": bool(self.ctx.get("_llm_replan_used")),
             "verify_pass": bool(verification.get("passed")),
             "auto_remediate_rounds": self._auto_remediate_rounds,
             "skills_fired": skills,
             "finalize_ran": bool(self.ctx.get("finalize_ran")),
             "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
+            "keep_rate": keep_rate,
+            "run_outcomes": run_outcomes,
+            "skills_auto_promoted": list(self.ctx.get("skills_auto_promoted") or []),
         }
 
 

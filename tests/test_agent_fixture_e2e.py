@@ -1,4 +1,4 @@
-"""IR-17: Real docx fixture E2E — POST /api/agent/plan → /api/agent/run (mock LLM)."""
+"""IR-17 / IR-18: Real docx fixture plan→run matrix (mock LLM, no API key)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import base64
 import json
 import time
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +19,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 _FIXTURE_FACTORIES = {
     "programming_lab.docx": "programming_lab",
     "code_cloze_singleton.docx": "code_cloze_singleton",
+    "theory_lab.docx": "theory_lab",
+    "training_table.docx": "training_table",
+    "mixed_theory_cloze.docx": "mixed_theory_cloze",
 }
 
 LLM_REQUEST = {
@@ -26,6 +30,97 @@ LLM_REQUEST = {
     "model": "deepseek-chat",
     "run_mode": "standard",
 }
+
+_WRONG_LAB_PLANNER = ["solve_lab", "run_code", "present_deliverable"]
+
+
+@dataclass(frozen=True)
+class FixtureE2ECase:
+    """One row in the IR-18 plan→run matrix."""
+
+    id: str
+    filename: str
+    doc_id: str
+    role: str
+    planner_modules: list[str]
+    expected_plan_modules: list[str]
+    expected_run_modules: list[str]
+    question_type: str
+    force_snapshot_on_run: bool = True
+    notes: str = ""
+
+
+IR18_FIXTURE_MATRIX: tuple[FixtureE2ECase, ...] = (
+    FixtureE2ECase(
+        id="programming_lab",
+        filename="programming_lab.docx",
+        doc_id="prog-lab",
+        role="fill_target",
+        planner_modules=["solve_lab", "present_deliverable"],
+        expected_plan_modules=["solve_lab", "present_deliverable"],
+        expected_run_modules=["solve_lab", "present_deliverable"],
+        question_type="lab_report",
+        force_snapshot_on_run=False,
+        notes="标准编程实验报告（document_ids 缓存路径）",
+    ),
+    FixtureE2ECase(
+        id="code_cloze_singleton",
+        filename="code_cloze_singleton.docx",
+        doc_id="cloze-docx",
+        role="assignment",
+        planner_modules=_WRONG_LAB_PLANNER,
+        expected_plan_modules=["solve_code_cloze", "present_deliverable"],
+        expected_run_modules=["solve_code_cloze", "present_deliverable"],
+        question_type="code_cloze",
+        force_snapshot_on_run=True,
+        notes="LLM 误出 lab 计划时规则链纠正为 cloze",
+    ),
+    FixtureE2ECase(
+        id="theory_lab",
+        filename="theory_lab.docx",
+        doc_id="theory-lab",
+        role="assignment",
+        planner_modules=_WRONG_LAB_PLANNER,
+        expected_plan_modules=["solve_lab", "present_deliverable"],
+        expected_run_modules=["solve_lab", "present_deliverable"],
+        question_type="lab_report",
+        notes="纯理论/分析型实验：theory_only 规则剔除 run_code",
+    ),
+    FixtureE2ECase(
+        id="training_table",
+        filename="training_table.docx",
+        doc_id="train-table",
+        role="fill_target",
+        planner_modules=_WRONG_LAB_PLANNER,
+        expected_plan_modules=["solve_short_answer", "present_deliverable"],
+        expected_run_modules=["solve_short_answer", "present_deliverable"],
+        question_type="short_answer",
+        notes="实训表格型：解析为 short_answer + 规则覆盖",
+    ),
+    FixtureE2ECase(
+        id="mixed_theory_cloze",
+        filename="mixed_theory_cloze.docx",
+        doc_id="mixed-doc",
+        role="assignment",
+        planner_modules=_WRONG_LAB_PLANNER,
+        expected_plan_modules=[
+            "solve_theory",
+            "solve_theory",
+            "solve_theory",
+            "solve_code_cloze",
+            "present_deliverable",
+        ],
+        expected_run_modules=[
+            "solve_theory",
+            "solve_theory",
+            "solve_theory",
+            "solve_code_cloze",
+            "present_deliverable",
+        ],
+        question_type="mixed_assignment",
+        notes="混排卷：简答 + 填空按段顺序",
+    ),
+)
 
 
 def _ensure_fixture(name: str) -> Path:
@@ -98,6 +193,22 @@ class _ModuleSequenceTracker:
             self.order.append(name)
             if name == "solve_lab":
                 return _mock_solve_lab_payload()
+            if name == "solve_theory":
+                return {
+                    "ok": True,
+                    "data": {
+                        "type": "theory",
+                        "parsed": {"answer_text": "理论作答"},
+                    },
+                }
+            if name == "solve_short_answer":
+                return {
+                    "ok": True,
+                    "data": {
+                        "type": "short_answer",
+                        "parsed": {"answers": [{"q": 1, "text": "简答"}]},
+                    },
+                }
             if name == "solve_code_cloze":
                 return {
                     "ok": True,
@@ -124,6 +235,8 @@ class _ModuleSequenceTracker:
             name: self.runner(name)
             for name in (
                 "solve_lab",
+                "solve_theory",
+                "solve_short_answer",
                 "solve_code_cloze",
                 "present_deliverable",
                 "run_code",
@@ -181,6 +294,7 @@ def _run_plan_then_execute(
         "steps": steps,
         "plan_fingerprint": plan_data["plan_fingerprint"],
         "agent_context_snapshot": snapshot,
+        "llm_replan": True,
     }
 
     stale_doc_ctx = (
@@ -214,6 +328,7 @@ def _run_plan_then_execute(
                     summary = done.get("run_summary") or {}
                     assert summary.get("mode") == "standard"
                     assert "llm_calls_by_phase" in summary
+                    assert "keep_rate" in summary
                     assert tracker.order == expected_run_modules
 
 
@@ -230,37 +345,28 @@ def _not_cancelled():
                 yield
 
 
-class TestAgentFixtureE2E:
-    """Parse real docx → plan → standard run without live LLM API keys."""
+class TestAgentFixtureMatrixIR18:
+    """IR-18: parametrized docx → plan → standard run matrix."""
 
-    def test_programming_lab_docx_plan_then_run(self, client):
+    @pytest.mark.parametrize("case", IR18_FIXTURE_MATRIX, ids=lambda c: c.id)
+    def test_fixture_plan_then_run(self, client, case: FixtureE2ECase):
         _run_plan_then_execute(
             client,
-            documents=_docx_documents_payload(
-                "prog-lab",
-                "programming_lab.docx",
-                role="fill_target",
-            ),
-            planner_modules=["solve_lab", "present_deliverable"],
-            expected_plan_modules=["solve_lab", "present_deliverable"],
-            expected_run_modules=["solve_lab", "present_deliverable"],
-            question_type="lab_report",
+            documents=_docx_documents_payload(case.doc_id, case.filename, role=case.role),
+            planner_modules=case.planner_modules,
+            expected_plan_modules=case.expected_plan_modules,
+            expected_run_modules=case.expected_run_modules,
+            question_type=case.question_type,
+            force_snapshot_on_run=case.force_snapshot_on_run,
         )
+
+
+# Backward-compatible aliases (IR-17 test names)
+class TestAgentFixtureE2E:
+    def test_programming_lab_docx_plan_then_run(self, client):
+        case = next(c for c in IR18_FIXTURE_MATRIX if c.id == "programming_lab")
+        TestAgentFixtureMatrixIR18().test_fixture_plan_then_run(client, case)
 
     def test_code_cloze_singleton_docx_plan_then_run(self, client):
-        """LLM may return lab plan; server must override to cloze route."""
-        _run_plan_then_execute(
-            client,
-            documents=_docx_documents_payload(
-                "cloze-docx",
-                "code_cloze_singleton.docx",
-                role="assignment",
-            ),
-            planner_modules=["solve_lab", "run_code", "present_deliverable"],
-            expected_plan_modules=["solve_code_cloze", "present_deliverable"],
-            expected_run_modules=["solve_code_cloze", "present_deliverable"],
-            question_type="code_cloze",
-            # assignment_only: resolve_agent_context planner_input ≠ plan-time text;
-            # exercise IR-2 snapshot fallback on run (production path).
-            force_snapshot_on_run=True,
-        )
+        case = next(c for c in IR18_FIXTURE_MATRIX if c.id == "code_cloze_singleton")
+        TestAgentFixtureMatrixIR18().test_fixture_plan_then_run(client, case)

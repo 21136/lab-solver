@@ -122,11 +122,18 @@ def compute_plan_fingerprint(
     return f"sha256:{digest[:32]}"
 
 
-def _normalize_step(step: dict, profile: dict, index: int) -> Optional[PlanStep]:
+def _normalize_step(
+    step: dict,
+    profile: dict,
+    index: int,
+    *,
+    allowed_modules: frozenset[str] | None = None,
+) -> Optional[PlanStep]:
     module = (step.get("module") or step.get("module_id") or "").strip()
     if not module:
         return None
-    if module not in _THIN_PLANNER_MODULES:
+    allowed = allowed_modules or _THIN_PLANNER_MODULES
+    if module not in allowed:
         logi("planner", f"跳过未知或非首期模块 step[{index}]={module}")
         return None
 
@@ -152,7 +159,12 @@ def _normalize_step(step: dict, profile: dict, index: int) -> Optional[PlanStep]
     )
 
 
-def normalize_plan(raw: dict, profile: dict) -> tuple[list[PlanStep], list[dict]]:
+def normalize_plan(
+    raw: dict,
+    profile: dict,
+    *,
+    allowed_modules: frozenset[str] | None = None,
+) -> tuple[list[PlanStep], list[dict]]:
     steps_in = raw.get("steps") or []
     if not isinstance(steps_in, list):
         steps_in = []
@@ -161,7 +173,7 @@ def normalize_plan(raw: dict, profile: dict) -> tuple[list[PlanStep], list[dict]
     for i, item in enumerate(steps_in):
         if not isinstance(item, dict):
             continue
-        norm = _normalize_step(item, profile, i)
+        norm = _normalize_step(item, profile, i, allowed_modules=allowed_modules)
         if norm:
             steps.append(norm)
 
@@ -374,55 +386,30 @@ def apply_question_type_overrides(
     q_type = (question_type or (metadata or {}).get("question_type") or "").strip().lower()
 
     decision_log = list(out.get("decision_log") or [])
-    if (metadata or {}).get("mixed_assignment"):
-        questions = (metadata or {}).get("assignment_questions") or []
-        steps = build_mixed_assignment_plan(questions)
+    from agent.plan_rules import apply_question_type_plan_rules
+
+    override_result = apply_question_type_plan_rules(
+        steps,
+        metadata=metadata,
+        question_type=q_type,
+    )
+    if override_result.rules_applied:
+        steps = override_result.steps
         out["clarifications"] = []
-        decision_log.append(
-            DecisionLogEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                agent="planner",
-                decision="plan_override",
-                source="rule",
-                target="mixed_assignment",
-                reason=f"override to mixed_assignment steps={len(steps)}",
-                evidence="",
-                fingerprint=out.get("plan_fingerprint") or "",
-                overridden=True,
+        for rule_id in override_result.rules_applied:
+            decision_log.append(
+                DecisionLogEntry(
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    agent="planner",
+                    decision="plan_override",
+                    source="rule",
+                    target=rule_id,
+                    reason=f"override to {rule_id} steps={len(steps)}",
+                    evidence="",
+                    fingerprint=out.get("plan_fingerprint") or "",
+                    overridden=True,
+                )
             )
-        )
-    elif q_type == "code_cloze":
-        steps = adjust_plan_for_code_cloze(steps, metadata=metadata)
-        out["clarifications"] = []
-        decision_log.append(
-            DecisionLogEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                agent="planner",
-                decision="plan_override",
-                source="rule",
-                target="code_cloze",
-                reason=f"override to code_cloze steps={len(steps)}",
-                evidence="",
-                fingerprint=out.get("plan_fingerprint") or "",
-                overridden=True,
-            )
-        )
-    elif q_type == "short_answer":
-        steps = adjust_plan_for_short_answer(steps, metadata=metadata)
-        out["clarifications"] = []
-        decision_log.append(
-            DecisionLogEntry(
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                agent="planner",
-                decision="plan_override",
-                source="rule",
-                target="short_answer",
-                reason=f"override to short_answer steps={len(steps)}",
-                evidence="",
-                fingerprint=out.get("plan_fingerprint") or "",
-                overridden=True,
-            )
-        )
 
     out["steps"] = steps
     out["decision_log"] = decision_log
@@ -806,12 +793,18 @@ def plan_from_report(
 
     steps = apply_behavior_to_steps(steps, profile_norm)
     _record_plan_stage(pipeline_stages, "behavior", "apply_behavior", f"steps={len(steps)}")
-    steps = adjust_plan_v4_aware(steps, settings, text, user_constraints)
-    _record_plan_stage(pipeline_stages, "rule", "adjust_v4_aware", f"steps={len(steps)}")
-    steps = adjust_plan_for_mixed_assignment(steps, metadata=metadata)
-    _record_plan_stage(pipeline_stages, "rule", "adjust_mixed_assignment", f"steps={len(steps)}")
-    steps = adjust_plan_for_code_cloze(steps, metadata=metadata)
-    _record_plan_stage(pipeline_stages, "rule", "adjust_code_cloze", f"steps={len(steps)}")
+    from agent.plan_rules import apply_post_llm_plan_rules
+
+    rule_result = apply_post_llm_plan_rules(
+        steps,
+        settings=settings,
+        report_text=text,
+        metadata=metadata,
+        constraints=user_constraints,
+    )
+    steps = rule_result.steps
+    for rule_id in rule_result.rules_applied:
+        _record_plan_stage(pipeline_stages, "rule", rule_id, f"steps={len(steps)}")
 
     doc_ids = document_ids
     if doc_ids is None and metadata:
@@ -884,6 +877,107 @@ def make_agent_context(
 
     record_plan_prompt_version(ctx, plan)
     return ctx
+
+
+def _llm_replan_enabled(ctx: dict, settings: dict | None = None) -> bool:
+    if ctx.get("llm_replan") is False:
+        return False
+    if ctx.get("llm_replan") is True:
+        return True
+    s = settings or ctx.get("settings") or {}
+    if s.get("llmReplan") is False or s.get("llm_replan") is False:
+        return False
+    return True
+
+
+def replan_steps_with_llm(
+    ctx: dict,
+    replan_context: dict,
+    *,
+    settings: dict | None = None,
+) -> list[PlanStep] | None:
+    """
+    One LLM call to replan pending steps after failure.
+    Returns None on missing key, parse error, or empty steps (caller uses rule fallback).
+    """
+    s = settings or ctx.get("settings") or {}
+    api_key = (s.get("api_key") or "").strip()
+    if not api_key:
+        return None
+
+    failed = replan_context.get("failed_module") or ""
+    error_summary = (replan_context.get("error_summary") or "")[:500]
+    completed = list(replan_context.get("completed_modules") or [])
+    completed_set = set(completed)
+
+    old_steps = list(
+        (ctx.get("confirmed_steps") or (ctx.get("plan") or {}).get("steps") or [])
+    )
+    pending = [s for s in old_steps if (s.get("module") or "") not in completed_set]
+    if not pending and not failed:
+        return None
+
+    text = ctx.get("planner_input_text") or ctx.get("report_text") or ""
+    from agent.prompt_budget import fit_budget
+
+    excerpt = fit_budget(
+        text,
+        budget_tokens=2000,
+        preserve_sections=["步骤", "结果", "要求"],
+        section_map=(ctx.get("metadata") or {}).get("section_map"),
+    )
+    from modules.solve_pipeline import should_use_pipeline
+    from agent.prompts import render_replan_prompt
+    from agent.registry import replan_module_catalog
+
+    replan_catalog = replan_module_catalog()
+    prompt = render_replan_prompt(
+        assignment_excerpt=excerpt,
+        completed_modules=completed,
+        failed_module=failed,
+        error_summary=error_summary,
+        pending_steps=pending,
+        module_catalog=sorted(replan_catalog),
+        v4_pipeline=should_use_pipeline(s),
+    )
+
+    from llm_client import chat
+
+    try:
+        chat_result = chat(
+            api_key=api_key,
+            provider=s.get("provider", "deepseek"),
+            model=s.get("model", "deepseek-chat"),
+            prompt=prompt,
+            custom_url=s.get("custom_url") or s.get("customUrl") or "",
+            max_tokens=3000,
+            phase="replan",
+        )
+        raw = parse_plan_json(chat_result.get("content") or "")
+        steps, _clar = normalize_plan(
+            raw,
+            ctx.get("user_profile") or _DEFAULT_PROFILE,
+            allowed_modules=replan_catalog,
+        )
+        if not steps:
+            return None
+        from agent.plan_rules import apply_post_llm_plan_rules
+
+        rule_result = apply_post_llm_plan_rules(
+            steps,
+            settings=s,
+            report_text=text,
+            metadata=ctx.get("metadata"),
+            constraints=(s.get("user_constraints") or s.get("userConstraints") or []),
+        )
+        steps = rule_result.steps
+        from agent.user_profile import apply_behavior_to_steps
+
+        steps = apply_behavior_to_steps(steps, ctx.get("user_profile") or _DEFAULT_PROFILE)
+        return steps
+    except Exception as e:
+        loge("planner", f"llm replan failed: {e}")
+        return None
 
 
 def _replan_steps_for_failure(
@@ -972,26 +1066,55 @@ def replan_incremental(
         (ctx.get("confirmed_steps") or (ctx.get("plan") or {}).get("steps") or [])
     )
     new_steps: list[PlanStep] = []
-    for step in old_steps:
-        mod = step.get("module") or ""
-        if mod in completed:
-            new_steps.append(step)
-            continue
-        if mod == failed:
-            continue
-        new_steps.append(step)
+    llm_used = False
+    settings = ctx.get("settings") or {}
 
-    existing_mods = {s.get("module") for s in new_steps}
-    for step in _replan_steps_for_failure(
-        failed,
-        error_summary,
-        error_category=error_category,
-        ctx=ctx,
-    ):
-        mod = step.get("module") or ""
-        if mod and mod not in existing_mods:
+    if _llm_replan_enabled(ctx, settings) and not ctx.get("_llm_replan_used"):
+        llm_steps = replan_steps_with_llm(ctx, replan_context, settings=settings)
+        if llm_steps:
+            ctx["_llm_replan_used"] = True
+            llm_used = True
+            completed_steps = [s for s in old_steps if (s.get("module") or "") in completed]
+            seen = {s.get("module") for s in completed_steps}
+            merged = list(completed_steps)
+            for step in llm_steps:
+                mod = step.get("module") or ""
+                if mod in completed:
+                    continue
+                if mod and mod not in seen:
+                    merged.append(step)
+                    seen.add(mod)
+            new_steps = merged
+            append_decision(
+                ctx,
+                agent="planner",
+                decision="replan_llm",
+                target=failed or "plan",
+                reason=f"LLM 重规划 {len(new_steps)} 步",
+                emit=emit,
+            )
+
+    if not llm_used:
+        for step in old_steps:
+            mod = step.get("module") or ""
+            if mod in completed:
+                new_steps.append(step)
+                continue
+            if mod == failed:
+                continue
             new_steps.append(step)
-            existing_mods.add(mod)
+
+        existing_mods = {s.get("module") for s in new_steps}
+        for step in _replan_steps_for_failure(
+            failed,
+            error_summary,
+            error_category=error_category,
+            ctx=ctx,
+        ):
+            mod = step.get("module") or ""
+            if mod and mod not in existing_mods:
+                new_steps.append(step)
+                existing_mods.add(mod)
 
     if not new_steps:
         new_steps = _fallback_plan(

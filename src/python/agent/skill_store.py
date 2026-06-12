@@ -262,6 +262,9 @@ load_promoted_skills()
 SKILL_CANDIDATES_PATH = APP_DATA / "skill_candidates.json"
 SKILL_CANDIDATE_MIN_OCCURRENCES = 2
 SKILL_CANDIDATE_WINDOW_DAYS = 7
+SKILL_AUTO_PROMOTE_MAX_PER_RUN = 1
+# Only error_category candidates auto-promote; notes_hash needs human inject text.
+SKILL_AUTO_PROMOTE_KINDS = frozenset({"error_category"})
 
 
 def _notes_hash(text: str) -> str:
@@ -303,6 +306,109 @@ def _suggested_trigger(kind: str, key: str) -> str:
     if kind == "notes_hash":
         return f"solve_lab.notes_hash={key}"
     return f"{kind}={key}"
+
+
+def _parse_candidate_source(source: str) -> tuple[str, str]:
+    raw = (source or "").strip()
+    if ":" in raw:
+        kind, key = raw.split(":", 1)
+        return kind.strip(), key.strip()
+    return raw, ""
+
+
+def _default_inject_for_candidate(entry: dict[str, Any]) -> str | None:
+    """Template inject for auto-promote (error_category only)."""
+    kind, key = _parse_candidate_source(str(entry.get("source") or ""))
+    if kind not in SKILL_AUTO_PROMOTE_KINDS:
+        return None
+    if kind == "error_category" and key:
+        try:
+            from modules.fix_code import FIX_STRATEGIES
+
+            hint = FIX_STRATEGIES.get(key)
+            if hint:
+                return f"【自动技能·{key}】{hint}"
+        except ImportError:
+            pass
+        return (
+            f"【自动技能·{key}】历史运行中 run_code 多次出现 {key} 类错误；"
+            "生成或修复代码时请优先避免同类问题。"
+        )
+    return None
+
+
+def auto_promote_skills_enabled(ctx: dict | None) -> bool:
+    if not ctx:
+        return True
+    if ctx.get("auto_promote_skills") is False:
+        return False
+    if ctx.get("auto_promote_skills") is True:
+        return True
+    settings = ctx.get("settings") or {}
+    if settings.get("autoPromoteSkills") is False or settings.get("auto_promote_skills") is False:
+        return False
+    return True
+
+
+def auto_promote_ready_candidates(ctx: dict) -> list[dict[str, Any]]:
+    """
+    Promote pending candidates that reached SKILL_CANDIDATE_MIN_OCCURRENCES.
+
+    Only ``error_category`` kinds with a template inject; at most
+    SKILL_AUTO_PROMOTE_MAX_PER_RUN per run. Manual promote API unchanged.
+    """
+    if not auto_promote_skills_enabled(ctx):
+        return []
+
+    promoted: list[dict[str, Any]] = []
+    candidates = _load_skill_candidates()
+    pending_ready = [
+        c
+        for c in candidates
+        if isinstance(c, dict)
+        and (c.get("status") or "pending") == "pending"
+        and int(c.get("occurrences") or 0) >= SKILL_CANDIDATE_MIN_OCCURRENCES
+    ]
+    # Stable order: most frequent first
+    pending_ready.sort(key=lambda c: int(c.get("occurrences") or 0), reverse=True)
+
+    for entry in pending_ready:
+        if len(promoted) >= SKILL_AUTO_PROMOTE_MAX_PER_RUN:
+            break
+        cid = str(entry.get("id") or "").strip()
+        if not cid:
+            continue
+        promoted_ids = {str(s.get("id") or "") for s in _load_promoted_skills_file()}
+        if cid in promoted_ids:
+            continue
+        inject = (entry.get("suggested_inject") or "").strip() or _default_inject_for_candidate(entry)
+        if not inject:
+            continue
+        try:
+            result = promote_skill_candidate(
+                cid,
+                inject=inject,
+                description=f"Auto-promoted from {entry.get('source', cid)}",
+                write_insights=False,
+            )
+            promoted.append(result)
+            from agent.decision_log import append_decision
+
+            append_decision(
+                ctx,
+                agent="skill_store",
+                decision="skill_auto_promoted",
+                source="run_finalize",
+                target=cid,
+                reason=str(entry.get("source") or cid),
+                evidence=inject[:200],
+            )
+        except ValueError:
+            continue
+
+    if promoted:
+        ctx["skills_auto_promoted"] = [p.get("id") for p in promoted if p.get("id")]
+    return promoted
 
 
 def _audit_skill_candidates(
@@ -400,6 +506,7 @@ def record_skill_candidates_from_run(ctx: dict) -> list[dict[str, Any]]:
                 new_pending.append(entry)
 
     _save_skill_candidates(candidates)
+    auto_promote_ready_candidates(ctx)
     return new_pending
 
 
@@ -442,6 +549,7 @@ def promote_skill_candidate(
     *,
     inject: str = "",
     description: str = "",
+    write_insights: bool = True,
 ) -> dict[str, Any]:
     """
     Promote a pending candidate into promoted_skills.json and register at runtime.
@@ -485,14 +593,16 @@ def promote_skill_candidate(
     entry["suggested_inject"] = inject_text
     _save_skill_candidates(candidates)
 
-    insights_updated = _append_ai_insights_promote_note(
-        cid,
-        str(entry.get("source") or ""),
-        inject_text,
-        str(entry.get("suggested_trigger") or ""),
-    )
+    insights_updated = False
+    if write_insights:
+        insights_updated = _append_ai_insights_promote_note(
+            cid,
+            str(entry.get("source") or ""),
+            inject_text,
+            str(entry.get("suggested_trigger") or ""),
+        )
 
-    return {**skill_entry, "insights_updated": insights_updated}
+    return {**skill_entry, "insights_updated": insights_updated, "auto": not write_insights}
 
 
 def _parse_iso(value: Any) -> datetime | None:
