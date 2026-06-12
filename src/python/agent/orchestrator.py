@@ -714,6 +714,10 @@ class RunOrchestrator:
             or solve_session.get("code_status")
             or solve_data_meta.get("code_status")
         )
+        from agent.run_result import quality_status_from_verification, unresolved_checks_from_verification
+
+        verify_pass = bool(verification.get("passed"))
+        remediate_rounds = self._auto_remediate_rounds
         return {
             "mode": mode,
             "solve_quality_tier": resolve_solve_quality_tier(settings, self.ctx),
@@ -723,8 +727,11 @@ class RunOrchestrator:
             "llm_calls_by_phase": get_llm_calls_by_phase(),
             "prompt_versions": dict(self.ctx.get("prompt_versions") or {}),
             "replan_count": self.replan_count,
-            "verify_pass": bool(verification.get("passed")),
-            "auto_remediate_rounds": self._auto_remediate_rounds,
+            "verify_pass": verify_pass,
+            "quality_status": quality_status_from_verification(verification),
+            "remediate_rounds": remediate_rounds,
+            "auto_remediate_rounds": remediate_rounds,
+            "unresolved_checks": unresolved_checks_from_verification(verification),
             "skills_fired": skills,
             "finalize_ran": bool(self.ctx.get("finalize_ran")),
             "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,

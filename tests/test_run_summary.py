@@ -46,10 +46,40 @@ def test_build_run_summary_fields():
     assert summary["prompt_versions"] == {"planner": "1.4.0", "code_only": "1.0.0"}
     assert summary["replan_count"] == 2
     assert summary["verify_pass"] is True
+    assert summary["quality_status"] == "passed"
+    assert summary["remediate_rounds"] == 1
     assert summary["auto_remediate_rounds"] == 1
+    assert summary["unresolved_checks"] == []
     assert summary["skills_fired"] == ["java-no-servlet"]
     assert summary["finalize_ran"] is True
     assert summary["output_path"] == "/tmp/out.docx"
+
+
+def test_build_run_summary_unresolved_checks_when_verify_fails():
+    ctx = {
+        "run_mode": "standard",
+        "settings": {},
+        "verification_report": {
+            "passed": False,
+            "checks": [
+                {"id": "no_placeholder", "ok": False, "message": "检测到占位: TODO"},
+                {"id": "schema_complete", "ok": True, "message": "结构完整"},
+            ],
+        },
+        "module_results": {},
+    }
+    orch = RunOrchestrator("rs-fail", ctx, emit=lambda _e: None)
+    orch._auto_remediate_rounds = 2
+
+    with patch("llm_client.get_llm_call_count", return_value=0):
+        with patch("llm_client.get_llm_calls_by_phase", return_value={}):
+            summary = orch.build_run_summary()
+
+    assert summary["verify_pass"] is False
+    assert summary["quality_status"] == "needs_review"
+    assert summary["remediate_rounds"] == 2
+    assert len(summary["unresolved_checks"]) == 1
+    assert summary["unresolved_checks"][0]["id"] == "no_placeholder"
 
 
 def test_finalize_run_payload_attaches_summary(tmp_path, monkeypatch):

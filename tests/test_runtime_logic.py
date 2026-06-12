@@ -593,6 +593,39 @@ class TestRL7ComputeRunOk:
 
         assert _standard_run_ok({"module_results": {"solve_lab": {"ok": True}}}) is True
 
+    def test_done_payload_quality_status_orthogonal_to_solve_ok(self):
+        from agent.run_result import build_run_done_payload
+
+        ctx = {
+            "module_results": {"solve_lab": {"ok": True, "data": {}}},
+            "verification_report": {"passed": False, "checks": [{"id": "x", "ok": False}]},
+        }
+        payload = build_run_done_payload(ctx, "p1-quality")
+        assert payload["ok"] is True
+        assert payload["quality_status"] == "needs_review"
+
+    def test_build_run_summary_quality_fields_contract(self):
+        from agent.orchestrator import RunOrchestrator
+
+        ctx = {
+            "run_mode": "standard",
+            "settings": {},
+            "verification_report": {
+                "passed": False,
+                "checks": [{"id": "code_runs", "ok": False, "message": "编译失败"}],
+            },
+            "module_results": {},
+        }
+        orch = RunOrchestrator("p1-contract", ctx, emit=lambda _e: None)
+        orch._auto_remediate_rounds = 1
+        with patch("llm_client.get_llm_call_count", return_value=0):
+            with patch("llm_client.get_llm_calls_by_phase", return_value={}):
+                summary = orch.build_run_summary()
+        assert summary["verify_pass"] is False
+        assert summary["quality_status"] == "needs_review"
+        assert summary["remediate_rounds"] == 1
+        assert summary["unresolved_checks"][0]["id"] == "code_runs"
+
     def test_three_modes_use_complete_agent_run(self):
         for rel in ("executor.py", "deep_pipeline.py", "react_loop.py"):
             src = (ROOT / "src" / "python" / "agent" / rel).read_text(encoding="utf-8")

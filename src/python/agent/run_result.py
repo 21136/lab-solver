@@ -17,6 +17,24 @@ def compute_run_ok(ctx: dict) -> bool:
     )
 
 
+def unresolved_checks_from_verification(verification: dict | None) -> list[dict]:
+    """Failed verify checks for run_summary / UI when verify did not pass."""
+    if not verification or verification.get("passed"):
+        return []
+    return [
+        {"id": c.get("id", ""), "message": c.get("message", "")}
+        for c in (verification.get("checks") or [])
+        if not c.get("ok")
+    ]
+
+
+def quality_status_from_verification(verification: dict | None) -> str:
+    """Product-facing quality state orthogonal to solve-only ``compute_run_ok``."""
+    if not verification:
+        return "unknown"
+    return "passed" if verification.get("passed") else "needs_review"
+
+
 def slim_module_results(ctx: dict) -> dict:
     return {
         k: {"ok": v.get("ok"), "data": v.get("data")}
@@ -34,11 +52,13 @@ def build_run_done_payload(
     fill_mr = (ctx.get("module_results") or {}).get("fill_report")
     present_mr = (ctx.get("module_results") or {}).get("present_deliverable")
     deliverable = ctx.get("deliverable") or (present_mr or {}).get("data", {}).get("deliverable")
+    verification = verification_report or ctx.get("verification_report") or {}
     final: dict[str, Any] = {
         "run_id": run_id,
         "ok": compute_run_ok(ctx),
         "module_results": slim_module_results(ctx),
-        "verification_report": verification_report or ctx.get("verification_report") or {},
+        "verification_report": verification,
+        "quality_status": quality_status_from_verification(verification),
         "output_path": (fill_mr or {}).get("data", {}).get("output_path") if fill_mr else None,
     }
     if deliverable is not None:

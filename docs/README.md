@@ -25,6 +25,8 @@
 | [RUNTIME_LOGIC_ISSUES.md](architecture/RUNTIME_LOGIC_ISSUES.md) | **运行逻辑问题清单** RL1–RL12（✅）+ `code_cloze` 补充 BF45–BF49 |
 | [AGENT_OPTIMIZATION_PLAN.md](architecture/AGENT_OPTIMIZATION_PLAN.md) | **Agent 优化路线图** AO-P0 ✅ · AO-P1～P3 待做 |
 | [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](architecture/AGENT_IMPROVEMENT_RECOMMENDATIONS.md) | **Agent 建设性改进建议** IR-1～IR-17 · 两周排期 |
+| [AGENT_ROADMAP_PHASES.md](architecture/AGENT_ROADMAP_PHASES.md) | **Agent 后续补强路线图** 阶段 1～4（体感 → 可靠 → 进化 → 工程债） |
+| [AGENT_CAPABILITY_GAPS.md](architecture/AGENT_CAPABILITY_GAPS.md) | Agent 能力短板评估与 §6 补强顺序 |
 
 ### [product/](product/) — 产品方向与路线图
 
