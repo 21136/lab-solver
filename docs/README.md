@@ -26,6 +26,7 @@
 | [AGENT_OPTIMIZATION_PLAN.md](architecture/AGENT_OPTIMIZATION_PLAN.md) | **Agent 优化路线图** AO-P0 ✅ · AO-P1～P3 待做 |
 | [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](architecture/AGENT_IMPROVEMENT_RECOMMENDATIONS.md) | **Agent 建设性改进建议** IR-1～IR-17 · 两周排期 |
 | [AGENT_CAPABILITY_GAPS.md](architecture/AGENT_CAPABILITY_GAPS.md) | **Agent 能力短板评估** · 强/弱环节对照与补强顺序 |
+| [AGENT_ROADMAP_PHASES.md](architecture/AGENT_ROADMAP_PHASES.md) | **Agent 后续路线图** · 四阶段：质量体感 → 可靠 → 进化闭环 → 工程债 |
 
 ### [product/](product/) — 产品方向与路线图
 

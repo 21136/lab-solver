@@ -767,6 +767,8 @@ rg "from modules.solve_pipeline import" src/python tests  # 调用方无需改 i
 
 ### 13.5 后续 backlog（IR-18+ 其余，待 solve 链后）
 
+> **实施顺序**：见 [AGENT_ROADMAP_PHASES.md](AGENT_ROADMAP_PHASES.md)（四阶段：质量体感 → IR-24/CI → Keep rate 驱动 → 工程债）。
+
 | 条目 | 主题 | 说明 |
 |------|------|------|
 | IR-18 | fixture plan→run 矩阵 | ✅ 2026-06-12：`test_agent_fixture_e2e.py` 5 行矩阵 |

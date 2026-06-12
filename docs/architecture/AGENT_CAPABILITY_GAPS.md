@@ -268,6 +268,8 @@ revise / auto_remediate / retry-step / replan 触发的 dirty 语义分散在：
 
 ## 6. 建议补强顺序（单主线）
 
+> **2026-06-12 更新**：下表 §6 主线（IR-22～IR-18）已落地。后续四阶段路线图见 **[AGENT_ROADMAP_PHASES.md](AGENT_ROADMAP_PHASES.md)**（质量体感 → IR-24 → Keep rate 驱动 → 工程债）。
+
 若只选一条线把「Agent 壳层偏静态」改掉，建议：
 
 ```mermaid
@@ -323,4 +325,4 @@ flowchart LR
 
 ---
 
-*本文档描述「哪里相对弱」，具体改法以 [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](AGENT_IMPROVEMENT_RECOMMENDATIONS.md) 与 [AGENT_OPTIMIZATION_PLAN.md](AGENT_OPTIMIZATION_PLAN.md) 的实施条目为准。*
+*本文档描述「哪里相对弱」。**§6 主线已落地**后的下一阶段顺序见 [AGENT_ROADMAP_PHASES.md](AGENT_ROADMAP_PHASES.md)；单项技术细节仍以 [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](AGENT_IMPROVEMENT_RECOMMENDATIONS.md) 与 [AGENT_OPTIMIZATION_PLAN.md](AGENT_OPTIMIZATION_PLAN.md) 为准。*
