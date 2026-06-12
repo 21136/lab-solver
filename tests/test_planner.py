@@ -219,6 +219,41 @@ def test_adjust_plan_for_code_cloze_facade():
     _assert_code_cloze_plan_only(out)
 
 
+@patch("server.understand_and_plan")
+@patch("server.plan_from_report")
+def test_deep_plan_code_cloze_skips_understand_llm(mock_plan, mock_understand):
+    """Deep + code_cloze: rule planner only; no merged understand_plan LLM."""
+    mock_plan.return_value = {
+        "steps": [
+            {"module": "solve_code_cloze", "params": {"language": "java"}, "default_checked": True},
+            {"module": "present_deliverable", "params": {}, "default_checked": True},
+        ],
+        "clarifications": [],
+        "plan_fingerprint": "sha256:cloze",
+        "decision_log": [],
+        "prompt_version": "test",
+    }
+    client = app.test_client()
+    resp = client.post(
+        "/api/agent/plan",
+        json={
+            "api_key": "sk-test",
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "run_mode": "deep",
+            "report_text": "占位",
+            "assignment_text": SAMPLE_CLOZE_TEXT,
+            "question": {"type": "lab_report"},
+        },
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    mock_understand.assert_not_called()
+    mock_plan.assert_called_once()
+    assert data["understand"]["cloze_fast_path"] is True
+    _assert_code_cloze_plan_only(data["steps"])
+
+
 @patch("server.plan_from_report")
 def test_agent_plan_paste_singleton_overrides_dirty_llm_plan(mock_plan):
     """BF47: stale question.type + pasted cloze text → cloze plan at API boundary."""

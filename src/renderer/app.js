@@ -5145,6 +5145,13 @@ function getRunMode() {
   return mode;
 }
 
+/** Only deep mode consumes plan-time understand; omit cloze fast-path stub. */
+function getAgentRunUnderstandPayload() {
+  if (getRunMode() !== 'deep' || !agentUnderstand) return undefined;
+  if (agentUnderstand.cloze_fast_path) return undefined;
+  return agentUnderstand;
+}
+
 function isAutonomousRunMode(mode) {
   const m = mode || lastSessionRunMode || getRunMode();
   return m === 'react' || m === 'deep';
@@ -5208,6 +5215,9 @@ function updateExportActionBarVisibility() {
 
 function onRunModeChange() {
   const mode = getRunMode();
+  if (mode !== 'deep') {
+    agentUnderstand = null;
+  }
   syncRunModeUI(mode);
   persistSettingsPatch({ runMode: mode });
   if (mode === 'deep') {
@@ -5834,7 +5844,7 @@ async function executeAgentPlan() {
       sections_config: collectSectionsConfigForApi(),
       split_idx: agentSplitIdx,
       format_spec: agentFormatSpec || undefined,
-      understand: agentUnderstand,
+      understand: getAgentRunUnderstandPayload(),
       fallback_on_failure: true,
       ...getSectionContextPayload(),
       assignment_text: agentAssignmentText || undefined,
@@ -6025,8 +6035,11 @@ function handleAgentSSEEvent(data, ctx) {
   if (type === 'progress') {
     if (data.status === 'running' && data.module === 'solve_code_cloze') {
       const label = AGENT_MODULE_LABELS.solve_code_cloze || 'solve_code_cloze';
-      appendAgentThought(label, data.detail || '正在分析填空…');
-      recordAgentThought({ type: 'progress', phase: label, text: data.detail || '执行中…', status: 'running' });
+      const skipClozeProgressThought = getRunMode() === 'react' && isAutonomousRunMode();
+      if (!skipClozeProgressThought) {
+        appendAgentThought(label, data.detail || '正在分析填空…');
+        recordAgentThought({ type: 'progress', phase: label, text: data.detail || '执行中…', status: 'running' });
+      }
     }
     if (isAutonomousRunMode()) return;
     const mod = data.module || '';

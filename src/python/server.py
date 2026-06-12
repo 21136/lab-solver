@@ -304,6 +304,31 @@ def _doc_ctx_from_snapshot(snapshot: dict | None) -> dict | None:
     }
 
 
+def _question_skips_deep_understand(question: dict | None, metadata: dict | None) -> bool:
+    """Code cloze / mixed rolls use rule planner; merged understand+plan LLM is a poor fit."""
+    meta = metadata or {}
+    qtype = (question or {}).get("type") or meta.get("question_type") or ""
+    if qtype in ("code_cloze", "mixed_assignment"):
+        return True
+    if meta.get("code_cloze") or meta.get("mixed_assignment"):
+        return True
+    return False
+
+
+def _cloze_fast_understand(metadata: dict | None) -> dict:
+    if (metadata or {}).get("mixed_assignment"):
+        return {
+            "summary": "混排卷（简答 + 代码填空）：已使用规则计划",
+            "grading_points": [],
+            "cloze_fast_path": True,
+        }
+    return {
+        "summary": "代码完形填空：已使用规则计划（无需深度读题）",
+        "grading_points": [],
+        "cloze_fast_path": True,
+    }
+
+
 def _maybe_save_insight(parsed: dict) -> None:
     """Auto-save LLM self-reported notes to AI_INSIGHTS.md."""
     notes = (parsed or {}).get("notes", "").strip()
@@ -930,7 +955,24 @@ def agent_plan():
         if not needs_uml:
             needs_uml = bool(diagram_needs.get("needs_uml"))
 
-        if run_mode == "deep":
+        plan_kwargs = dict(
+            report_text=report_text,
+            settings=settings,
+            profile=profile,
+            metadata=metadata,
+            needs_uml=needs_uml,
+            diagram_needs=diagram_needs,
+            planner_input_text=planner_input,
+            sections_config=sections_config,
+            document_ids=document_ids,
+            split_idx=split_idx,
+            format_spec=format_spec,
+        )
+        skip_deep_understand = _question_skips_deep_understand(question, metadata)
+        if run_mode == "deep" and skip_deep_understand:
+            understand = _cloze_fast_understand(metadata)
+            plan = plan_from_report(**plan_kwargs)
+        elif run_mode == "deep":
             understand, plan = understand_and_plan(
                 report_text,
                 settings=settings,
@@ -945,19 +987,7 @@ def agent_plan():
             )
         else:
             understand = None
-            plan = plan_from_report(
-                report_text,
-                settings=settings,
-                profile=profile,
-                metadata=metadata,
-                needs_uml=needs_uml,
-                diagram_needs=diagram_needs,
-                planner_input_text=planner_input,
-                sections_config=sections_config,
-                document_ids=document_ids,
-                split_idx=split_idx,
-                format_spec=format_spec,
-            )
+            plan = plan_from_report(**plan_kwargs)
         plan = apply_question_type_overrides(
             plan,
             metadata=metadata,
