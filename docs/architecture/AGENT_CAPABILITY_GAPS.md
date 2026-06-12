@@ -1,7 +1,7 @@
 # Agent 能力短板评估
 
 **版本**: 2026-06-12  
-**状态**: 🚧 补强实施中（§6 顺序 1～4 ✅ · 5 部分 ✅）  
+**状态**: ✅ §6 主线已落地（IR-18 fixture 矩阵 2026-06-12）  
 **定位**: 在 V3 编排收敛、AO-P0～P3、IR-1～IR-21 已落地之后，**客观列出 Agent 层相对薄弱的环节**，与强项对照，并给出可执行的补强顺序。  
 **关联**: [AGENT_ARCHITECTURE_V3.md](AGENT_ARCHITECTURE_V3.md) · [AGENT_OPTIMIZATION_PLAN.md](AGENT_OPTIMIZATION_PLAN.md) · [AGENT_IMPROVEMENT_RECOMMENDATIONS.md](AGENT_IMPROVEMENT_RECOMMENDATIONS.md) · [NEXT_VERSION_BACKLOG.md](../product/NEXT_VERSION_BACKLOG.md) §C2 · [AI_INSIGHTS.md](../reference/AI_INSIGHTS.md)
 
@@ -107,7 +107,7 @@ solve_lab 失败    → 原样重试 solve_lab（confidence=low）
 
 | 条目 | 说明 |
 |------|------|
-| IR-18 | fixture plan→run 矩阵（theory / mixed / training_table） |
+| IR-18 | fixture plan→run 矩阵（theory / mixed / training_table） | ✅ |
 | IR-22 | `adjust_plan_*` → 有序 `PlanRule` 声明式链 |
 
 ---
@@ -283,7 +283,7 @@ flowchart LR
 | **2** | 失败 replan：带 `error_summary` + `assignment` 调 LLM **1 次**（保留规则 fallback） | 连锁失败能「重想」而非只插 fix_code | 2～3 天 |
 | **3** | C2 设置默认 on（可关）+ Step3 复制/导出/revise 写 `behavior.outcomes` | 计划默认勾选更贴用户 | 1～2 天 |
 | **4** | Keep rate 本地统计 + `run_summary` 扩展 | 优化有数据，不靠体感 | 2～3 天 |
-| **5** | IR-18 fixture 矩阵 + IR-25 jsonl 聚合 | CI 守护题型组合 | 2～4 天 |
+| **5** | IR-18 fixture 矩阵 + IR-25 jsonl 聚合 | ✅ 2026-06-12 | — |
 
 **明确不做**（与现有战略一致）：
 
@@ -318,6 +318,8 @@ flowchart LR
 | 日期 | 说明 |
 |------|------|
 | 2026-06-12 | 初稿：基于 V3/AO/IR 文档与 `planner.py` / `react_loop.py` / `skill_store.py` 代码对齐 |
+| 2026-06-12 | §6 落地：`plan_rules.py` · LLM replan · C2 默认 on · `behavior.outcomes` · `run_metrics` |
+| 2026-06-12 | IR-18：5 行 fixture 矩阵 E2E；plan 题型覆盖后重算 fingerprint |
 
 ---
 

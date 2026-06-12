@@ -1019,7 +1019,8 @@ def agent_plan():
             question["type"] = "mixed_assignment"
             metadata["question_type"] = "mixed_assignment"
         steps = plan.get("steps", [])
-        fingerprint = plan.get("plan_fingerprint") or compute_plan_fingerprint(
+        # Recompute after question-type overrides (steps may differ from plan_from_report).
+        fingerprint = compute_plan_fingerprint(
             planner_input,
             steps,
             document_ids=document_ids,

@@ -45,3 +45,14 @@ def test_aggregate_run_events_counts_done(tmp_path, monkeypatch):
     assert summary["done_ok"] == 1
     assert summary["verify_pass"] == 1
     assert summary["llm_calls_total"] == 4
+
+
+def test_agent_run_metrics_api():
+    from server import app
+
+    client = app.test_client()
+    resp = client.get("/api/agent/run-metrics?max_files=5&max_age_days=7")
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert "run_events" in data
+    assert "keep_rate" in data
