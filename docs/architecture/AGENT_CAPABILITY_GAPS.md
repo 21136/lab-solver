@@ -248,7 +248,7 @@ revise / auto_remediate / retry-step / replan 触发的 dirty 语义分散在：
 
 #### 关联 backlog
 
-- **IR-23**：`executor_dirty` 表驱动状态机 + golden
+- **IR-23** ✅：`dirty_state.py` 表驱动 verify→modules/dirty_fields；`executor_dirty.py` 薄封装；`tests/test_executor_dirty_golden.py` golden
 
 ---
 

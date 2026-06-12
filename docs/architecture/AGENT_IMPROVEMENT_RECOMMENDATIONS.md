@@ -771,7 +771,7 @@ rg "from modules.solve_pipeline import" src/python tests  # 调用方无需改 i
 |------|------|------|
 | IR-18 | fixture plan→run 矩阵 | ✅ 2026-06-12：`test_agent_fixture_e2e.py` 5 行矩阵 |
 | IR-22 | Planner 声明式规则链 | IR-6 深化；`adjust_plan_*` → 有序 `PlanRule` |
-| IR-23 | `executor_dirty` 状态机 | revise / remediate / retry 表驱动 + golden |
+| IR-23 | `executor_dirty` 状态机 | ✅ 2026-06-12：`dirty_state.py` 表驱动 verify 路径 + `test_executor_dirty_golden.py` |
 | IR-24 | 前端 run 恢复 | 消费 IR-16 jsonl / `orphaned` |
 | IR-25 | §8 指标聚合 | 从 `run_summary` + `run_events/*.jsonl` 本地统计 |
 | IR-26 | `parse_documents` 阶段化 | 与 IR-18 mixed fixture 联动 |
