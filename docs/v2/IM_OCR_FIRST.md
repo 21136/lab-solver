@@ -200,15 +200,15 @@ OCR_OK = False  # shutil.which("tesseract") and import pytesseract
 
 中文印刷体识别率可能优于 Tesseract，但依赖更重、打包体积更大（见 backlog O27）。**IM2 先用 Tesseract 闭环**；若金样本不达标再评估 Paddle 作为 opt-in 引擎。
 
-### 5.4 Vision（IM5，非本期）
+### 5.4 Vision（IM5，opt-in）
 
 仅当同时满足：
 
-- 用户设置 `imageReadingMode=hybrid` 或 `vision`
-- `llm_client` 检测到当前 provider/model 支持 image content parts
-- 该页 `ocr_status ∈ {empty, low_confidence, failed}`
+- 用户设置 `imageReadingMode=hybrid` 或 `vision`（**保守默认仍为 `ocr_only`**）
+- `llm_client` / catalog 判定当前 provider/model 支持 AI 识图（见 [VISION_CAPABILITY.md](../features/VISION_CAPABILITY.md)）
+- 该页 `ocr_status ∈ {empty, low_confidence, failed}`（`vision` 模式可跳过 OCR）
 
-才对该页调用一次 Vision 摘要，写入 `vision_summary` 并并入 `assignment_text`。默认 **不实现也不开启**。
+才对该页调用一次 Vision 摘要，写入 `vision_summary` 并并入 `assignment_text`。不支持或失败时**静默回退 OCR**，不阻断解题。
 
 ---
 
