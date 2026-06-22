@@ -55,6 +55,7 @@
 | [KEY_STORAGE.md](features/KEY_STORAGE.md) | Electron safeStorage 方案 |
 | [HOSTED_LLM_PROVIDERS.md](features/HOSTED_LLM_PROVIDERS.md) | **Agnes 托管 Key**（零配置 · 2026-06-06 ✅） |
 | [MODEL_REGISTRY.md](features/MODEL_REGISTRY.md) | LLM 模型 catalog、弃用别名、DeepSeek V4 迁移 |
+| [VISION_CAPABILITY.md](features/VISION_CAPABILITY.md) | **识图能力探测**（保守策略：OCR 默认 · catalog 标记 · 灰度探测） |
 | [CODE_CLOZE_QUESTIONS.md](features/CODE_CLOZE_QUESTIONS.md) | **代码完形填空** 题型规格 · A/B/C ✅ |
 | [CODE_CLOZE_ROUTING.md](features/CODE_CLOZE_ROUTING.md) | **代码完形填空** 模式矩阵 / 改动边界 / PR 自检（改代码前必读） |
 
