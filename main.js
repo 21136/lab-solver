@@ -71,8 +71,11 @@ function getPythonPath() {
     const embeddedPython = path.join(process.resourcesPath, 'python-dist', 'server', 'server.exe');
     if (fs.existsSync(embeddedPython)) return embeddedPython;
     // 备用：系统Python
-    return 'python';
+    return process.env.PYTHON || 'python';
   }
+  // start.bat 会写入 PYTHON=python.exe 绝对路径，避免仅安装 py 启动器时找不到解释器
+  const fromEnv = (process.env.PYTHON || '').trim();
+  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
   return 'python';
 }
 
