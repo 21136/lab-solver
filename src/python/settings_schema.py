@@ -1,6 +1,6 @@
 """Settings schema version for Electron localStorage migration."""
 
-SETTINGS_SCHEMA_VERSION = 10
+SETTINGS_SCHEMA_VERSION = 11
 
 SETTINGS_DEFAULTS = {
     "schema_version": SETTINGS_SCHEMA_VERSION,
@@ -41,4 +41,8 @@ SETTINGS_DEFAULTS = {
     "imageReadingMode": "ocr_only",
     "imageOcrMaxPages": 20,
     "imageVisionMaxPages": 5,
+    # AGENT_CAPABILITY_GAPS: C2 behavior learning default on
+    "optimizePlanFromUsage": True,
+    # AGENT_CAPABILITY_GAPS: optional LLM replan on module failure
+    "llmReplan": True,
 }

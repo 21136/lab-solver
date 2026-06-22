@@ -769,7 +769,7 @@ rg "from modules.solve_pipeline import" src/python tests  # 调用方无需改 i
 
 | 条目 | 主题 | 说明 |
 |------|------|------|
-| IR-18 | fixture plan→run 矩阵 | 扩展 IR-17：`theory_lab`、`mixed_theory_cloze`、`training_table` 等 |
+| IR-18 | fixture plan→run 矩阵 | ✅ 2026-06-12：`test_agent_fixture_e2e.py` 5 行矩阵 |
 | IR-22 | Planner 声明式规则链 | IR-6 深化；`adjust_plan_*` → 有序 `PlanRule` |
 | IR-23 | `executor_dirty` 状态机 | revise / remediate / retry 表驱动 + golden |
 | IR-24 | 前端 run 恢复 | 消费 IR-16 jsonl / `orphaned` |

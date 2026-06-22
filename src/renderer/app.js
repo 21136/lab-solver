@@ -5194,6 +5194,24 @@ function resolveAutoRemediateMaxRoundsForRun() {
   return Math.max(0, Math.min(5, raw));
 }
 
+function resolveLlmReplanForRun() {
+  return readSettings().llmReplan !== false;
+}
+
+async function recordBehaviorOutcome(event, meta = {}) {
+  if (!event) return;
+  try {
+    await apiPost('/api/profile/behavior-outcome', {
+      event,
+      section: meta.section || '',
+      run_id: meta.runId || agentRunId || '',
+      format: meta.format || '',
+    });
+  } catch (err) {
+    console.warn('[behavior-outcome]', event, err?.message || err);
+  }
+}
+
 const SOLVE_QUALITY_TIER_LABELS = {
   fast: '极速',
   standard: '标准',
@@ -5613,7 +5631,7 @@ async function postAgentPlanFeedback(confirmedSteps, fingerprint) {
       baseline_steps: agentPlanBaselineSteps,
       steps: confirmedSteps,
       document_ids: agentDocumentIds,
-      apply_to_profile: readSettings().optimizePlanFromUsage === true,
+      apply_to_profile: readSettings().optimizePlanFromUsage !== false,
       profile: getAgentApiSettings().profile,
     });
     if (resp && resp.history) {
@@ -5727,6 +5745,7 @@ async function executeAgentPlan() {
       auto_remediate: resolveAutoRemediateForRun(runMode),
       auto_remediate_max_rounds: resolveAutoRemediateMaxRoundsForRun(),
       max_replan_rounds: resolveMaxReplanRoundsForRun(),
+      llm_replan: resolveLlmReplanForRun(),
       sections_config: collectSectionsConfigForApi(),
       split_idx: agentSplitIdx,
       format_spec: agentFormatSpec || undefined,
@@ -6540,6 +6559,7 @@ async function requestAgentRevise(forcedScope, options = {}) {
     agentDirtyModules = resp.dirty_modules || options.rerunModules || [];
     agentFillSections = resp.fill_sections ?? agentFillSections;
     showToast('已根据反馈修订内容', 'success');
+    recordBehaviorOutcome('revise_submit');
     await runAgentVerify();
     const settings2 = collectSolveOptions(readSettings());
     onSolveComplete(settings2);
@@ -8015,6 +8035,7 @@ async function copyDeliverableSection() {
     await navigator.clipboard.writeText(text);
     const label = DELIVERABLE_TEXT_SECTIONS.find((t) => t.id === activeDeliverableTab)?.label || '本节';
     showToast(`已复制「${label}」`, 'success');
+    recordBehaviorOutcome('copy_section', { section: activeDeliverableTab || '' });
   } catch (err) {
     showToast('复制失败: ' + err.message, 'error');
   }
@@ -8136,6 +8157,8 @@ async function downloadDeliverableExport(format, defaultName, filters) {
       renderDeliverableProvenance(currentDeliverable);
     }
     showToast('已保存', 'success');
+    const outcomeEvent = format === 'markdown' ? 'export_markdown' : format === 'docx' ? 'export_docx' : 'export_deliverable';
+    recordBehaviorOutcome(outcomeEvent, { format: format || '' });
   } catch (err) {
     showToast('保存失败: ' + err.message, 'error');
   }
@@ -8766,7 +8789,7 @@ function renderHistory() {
 // 设置
 // ============================
 
-const SETTINGS_SCHEMA_VERSION = 10;
+const SETTINGS_SCHEMA_VERSION = 11;
 let _runtimeApiKey = '';
 let _encryptionAvailable = false;
 let _fallbackNotified = false;
@@ -9034,7 +9057,8 @@ function mergeSettings(saved) {
     runMode: saved.runMode || 'standard',
     experimentalReactMode: saved.experimentalReactMode === true,
     showThoughtTrace: saved.showThoughtTrace === true,
-    optimizePlanFromUsage: saved.optimizePlanFromUsage === true,
+    optimizePlanFromUsage: saved.optimizePlanFromUsage !== false,
+    llmReplan: saved.llmReplan !== false,
     autoRemediate: saved.autoRemediate !== false,
     autoRemediateMaxRounds: Number.isFinite(Number(saved.autoRemediateMaxRounds))
       ? Math.max(0, Math.min(5, Number(saved.autoRemediateMaxRounds)))
@@ -9108,6 +9132,16 @@ function mergeSettings(saved) {
         merged.solveQualityTierExplicit = false;
       }
     }
+    if (version < 11) {
+      if (saved.optimizePlanFromUsage === undefined) {
+        migration.optimizePlanFromUsage = true;
+        merged.optimizePlanFromUsage = true;
+      }
+      if (saved.llmReplan === undefined) {
+        migration.llmReplan = true;
+        merged.llmReplan = true;
+      }
+    }
     persistSettingsPatch(migration);
   }
   return merged;
@@ -9142,7 +9176,7 @@ function applySettingsToForm(settings) {
   const thoughtEl = document.getElementById('showThoughtTraceSettings');
   if (thoughtEl) thoughtEl.checked = settings.showThoughtTrace;
   const optimizeEl = document.getElementById('optimizePlanFromUsageSettings');
-  if (optimizeEl) optimizeEl.checked = settings.optimizePlanFromUsage === true;
+  if (optimizeEl) optimizeEl.checked = settings.optimizePlanFromUsage !== false;
   const autoRemediateEl = document.getElementById('autoRemediateSettings');
   if (autoRemediateEl) autoRemediateEl.checked = settings.autoRemediate !== false;
   const autoRemediateRoundsEl = document.getElementById('autoRemediateMaxRoundsSettings');
