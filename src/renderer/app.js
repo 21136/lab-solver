@@ -1894,6 +1894,108 @@ function updateStep3CompletionActions() {
   });
 }
 
+/** P1-1: solve-only ok vs verify_pass — orthogonal quality state for Step3. */
+function resolveRunQualityState(solveOk, summary, verificationReport) {
+  const verifyPass = summary?.verify_pass ?? verificationReport?.passed;
+  const remediateRounds = summary?.remediate_rounds
+    ?? summary?.auto_remediate_rounds
+    ?? verificationReport?.remediate_rounds
+    ?? 0;
+  if (!solveOk) {
+    return { solveOk: false, verifyPass: false, status: 'failed', remediateRounds };
+  }
+  if (verifyPass === true) {
+    return { solveOk: true, verifyPass: true, status: 'passed', remediateRounds };
+  }
+  if (verifyPass === false) {
+    return { solveOk: true, verifyPass: false, status: 'needs_review', remediateRounds };
+  }
+  return { solveOk: true, verifyPass: null, status: 'unknown', remediateRounds };
+}
+
+function updateStep3QualityBanner(solveOk, summary, verificationReport) {
+  const banner = document.getElementById('step3QualityBanner');
+  if (!banner) return;
+  if (!agentRunFinished || agentExecutionMode) {
+    uiHide(banner);
+    return;
+  }
+  const state = resolveRunQualityState(solveOk, summary, verificationReport);
+  const titleEl = document.getElementById('step3QualityTitle');
+  const hintEl = document.getElementById('step3QualityHint');
+  const iconEl = document.getElementById('step3QualityIcon');
+  banner.classList.remove('quality-passed', 'quality-needs-review', 'quality-failed');
+  uiShow(banner, 'flex');
+
+  if (state.status === 'passed') {
+    banner.classList.add('quality-passed');
+    if (iconEl) iconEl.innerHTML = ico('check-circle', 'icon-sm');
+    if (titleEl) titleEl.textContent = '解题完成 · 校验通过';
+    if (hintEl) {
+      hintEl.textContent = state.remediateRounds > 0
+        ? `已自动修复 ${state.remediateRounds} 轮，可直接复制到实验报告`
+        : '答案已生成，可直接复制到实验报告';
+    }
+    return;
+  }
+  if (state.status === 'needs_review') {
+    banner.classList.add('quality-needs-review');
+    if (iconEl) iconEl.innerHTML = ico('alert-triangle', 'icon-sm');
+    if (titleEl) titleEl.textContent = '解题完成 · 校验未通过';
+    const unresolved = summary?.unresolved_checks?.length
+      || (verificationReport?.checks || []).filter((c) => !c.ok).length;
+    let hint = '提交前请展开下方「校验清单」复核，或手动修订答案';
+    if (state.remediateRounds > 0) {
+      hint = `已自动修复 ${state.remediateRounds} 轮仍未全部通过 · ${hint}`;
+    }
+    if (unresolved) hint += `（${unresolved} 项待处理）`;
+    if (hintEl) hintEl.textContent = hint;
+    return;
+  }
+  if (state.status === 'failed') {
+    banner.classList.add('quality-failed');
+    if (iconEl) iconEl.innerHTML = ico('x-circle', 'icon-sm');
+    if (titleEl) titleEl.textContent = '生成未完全成功';
+    if (hintEl) hintEl.textContent = '可返回 Step2 调整计划后重试';
+    return;
+  }
+  uiHide(banner);
+}
+
+function agentRunProgressLabel(solveOk, summary, verificationReport) {
+  const state = resolveRunQualityState(solveOk, summary, verificationReport);
+  if (!state.solveOk) return '部分失败';
+  if (state.verifyPass === true) return '解题完成 · 校验通过';
+  if (state.verifyPass === false) return '解题完成 · 校验待复核';
+  return '解题完成';
+}
+
+function buildVerificationPanelFromDone(data) {
+  const summary = data.run_summary || {};
+  const vr = data.verification_report || {};
+  const remediateRounds = summary.remediate_rounds
+    ?? summary.auto_remediate_rounds
+    ?? vr.remediate_rounds
+    ?? 0;
+  const checks = (vr.checks && vr.checks.length)
+    ? vr.checks
+    : (summary.unresolved_checks || []).map((u) => ({
+      id: u.id,
+      ok: false,
+      message: u.message || '',
+    }));
+  return {
+    ...vr,
+    passed: vr.passed ?? summary.verify_pass,
+    remediated: remediateRounds > 0,
+    remediate_rounds: remediateRounds,
+    remediation_exhausted: summary.verify_pass === false,
+    checks,
+    suggested_actions: vr.suggested_actions || [],
+    unresolved_checks: summary.unresolved_checks || [],
+  };
+}
+
 // ============================
 // 文件上传 & 多文档
 // ============================
@@ -5043,6 +5145,13 @@ function getRunMode() {
   return mode;
 }
 
+/** Only deep mode consumes plan-time understand; omit cloze fast-path stub. */
+function getAgentRunUnderstandPayload() {
+  if (getRunMode() !== 'deep' || !agentUnderstand) return undefined;
+  if (agentUnderstand.cloze_fast_path) return undefined;
+  return agentUnderstand;
+}
+
 function isAutonomousRunMode(mode) {
   const m = mode || lastSessionRunMode || getRunMode();
   return m === 'react' || m === 'deep';
@@ -5106,6 +5215,9 @@ function updateExportActionBarVisibility() {
 
 function onRunModeChange() {
   const mode = getRunMode();
+  if (mode !== 'deep') {
+    agentUnderstand = null;
+  }
   syncRunModeUI(mode);
   persistSettingsPatch({ runMode: mode });
   if (mode === 'deep') {
@@ -5703,6 +5815,8 @@ async function executeAgentPlan() {
   if (thoughtBody) thoughtBody.innerHTML = '';
   updateThoughtSidebarBadge();
   if (verifyWrap) uiHide(verifyWrap);
+  const qualityBanner = document.getElementById('step3QualityBanner');
+  if (qualityBanner) uiHide(qualityBanner);
   agentVerificationReport = null;
   agentModuleResults = null;
   agentConfirmedSteps = steps;
@@ -5730,7 +5844,7 @@ async function executeAgentPlan() {
       sections_config: collectSectionsConfigForApi(),
       split_idx: agentSplitIdx,
       format_spec: agentFormatSpec || undefined,
-      understand: agentUnderstand,
+      understand: getAgentRunUnderstandPayload(),
       fallback_on_failure: true,
       ...getSectionContextPayload(),
       assignment_text: agentAssignmentText || undefined,
@@ -5921,8 +6035,11 @@ function handleAgentSSEEvent(data, ctx) {
   if (type === 'progress') {
     if (data.status === 'running' && data.module === 'solve_code_cloze') {
       const label = AGENT_MODULE_LABELS.solve_code_cloze || 'solve_code_cloze';
-      appendAgentThought(label, data.detail || '正在分析填空…');
-      recordAgentThought({ type: 'progress', phase: label, text: data.detail || '执行中…', status: 'running' });
+      const skipClozeProgressThought = getRunMode() === 'react' && isAutonomousRunMode();
+      if (!skipClozeProgressThought) {
+        appendAgentThought(label, data.detail || '正在分析填空…');
+        recordAgentThought({ type: 'progress', phase: label, text: data.detail || '执行中…', status: 'running' });
+      }
     }
     if (isAutonomousRunMode()) return;
     const mod = data.module || '';
@@ -6166,17 +6283,10 @@ function handleAgentSSEEvent(data, ctx) {
     if (data.run_summary) {
       lastRunSummary = data.run_summary;
     }
-    if (data.verification_report) {
-      agentVerificationReport = data.verification_report;
-      renderVerificationPanel(data.verification_report);
-    } else if (data.run_summary && data.run_summary.auto_remediate_rounds) {
-      renderVerificationPanel({
-        passed: data.run_summary.verify_pass,
-        remediated: true,
-        remediate_rounds: data.run_summary.auto_remediate_rounds,
-        checks: [],
-        suggested_actions: [],
-      });
+    if (data.verification_report || data.run_summary) {
+      const panelReport = buildVerificationPanelFromDone(data);
+      agentVerificationReport = panelReport;
+      renderVerificationPanel(panelReport);
     }
     applyAgentRunDone(data).then(() => finishAgentRunUI(data.ok !== false));
   }
@@ -6258,10 +6368,25 @@ function renderVerificationPanel(report) {
   const wrap = document.getElementById('agentVerifyWrap');
   const list = document.getElementById('agentVerifyList');
   const fixes = document.getElementById('agentVerifyFixes');
+  const remediationSummary = document.getElementById('agentVerifyRemediationSummary');
   if (!wrap || !list || !report) return;
   uiShow(wrap, 'block');
   if (solvedAnswers[0]) solvedAnswers[0].verification_report = report;
   const checks = report.checks || [];
+  const failedChecks = checks.filter((c) => !c.ok);
+  if (remediationSummary) {
+    if (!report.passed && failedChecks.length) {
+      const rounds = report.remediate_rounds || 0;
+      const title = rounds > 0
+        ? `自动修复已进行 ${rounds} 轮，以下 ${failedChecks.length} 项仍未通过：`
+        : `以下 ${failedChecks.length} 项校验未通过：`;
+      remediationSummary.innerHTML = `<p class="agent-verify-remediation-title">${escapeHtml(title)}</p>`;
+      uiShow(remediationSummary, 'block');
+    } else {
+      remediationSummary.innerHTML = '';
+      uiHide(remediationSummary);
+    }
+  }
   list.innerHTML = checks
     .map((c) => {
       const isWarn = !c.ok && VERIFY_WARN_IDS.has(c.id);
@@ -6278,11 +6403,20 @@ function renderVerificationPanel(report) {
   );
   if (hint) {
     const labels = actions.map((a) => VERIFY_ACTION_LABELS[a] || a);
-    let text = labels.length
-      ? `建议操作：${labels.join('、')}`
-      : (report.passed ? '校验通过，可生成报告' : '存在需处理项，可修订或回分节调整要求');
+    let text;
+    if (report.passed) {
+      text = '校验通过，可直接复制答案到实验报告';
+    } else if (report.remediation_exhausted && report.remediate_rounds > 0) {
+      text = labels.length
+        ? `自动修复已用尽，建议：${labels.join('、')}，或复制答案后手动修订`
+        : '自动修复已用尽，建议复制答案后对照清单手动修订，或展开下方「修订选项」';
+    } else if (labels.length) {
+      text = `建议操作：${labels.join('、')}`;
+    } else {
+      text = '存在需处理项，可修订或回分节调整要求';
+    }
     if (hasConstraintFail) text += ' · 可回 Step2 按老师要求补全';
-    if (report.remediated && report.remediate_rounds) {
+    if (!report.passed && !report.remediation_exhausted && report.remediated && report.remediate_rounds) {
       text += ` · 已自动修复 ${report.remediate_rounds} 轮`;
     }
     hint.textContent = text;
@@ -6630,9 +6764,26 @@ async function applyAgentRunDone(event) {
     renderDeliverableWorkspace(currentDeliverable);
   }
 
+  const qualityState = resolveRunQualityState(
+    event.ok !== false,
+    event.run_summary,
+    event.verification_report || agentVerificationReport,
+  );
   const t3El = document.getElementById('step3Title');
-  if (t3El) setHeadingIcon(t3El, event.ok !== false ? 'clipboard-list' : 'alert-triangle',
-    event.ok !== false ? '答案工作区' : '生成未完全成功');
+  if (t3El) {
+    if (!qualityState.solveOk) {
+      setHeadingIcon(t3El, 'alert-triangle', '生成未完全成功');
+    } else if (qualityState.verifyPass === false) {
+      setHeadingIcon(t3El, 'clipboard-list', '答案工作区 · 待复核');
+    } else {
+      setHeadingIcon(t3El, 'clipboard-list', '答案工作区');
+    }
+  }
+  updateStep3QualityBanner(
+    event.ok !== false,
+    event.run_summary,
+    event.verification_report || agentVerificationReport,
+  );
   ['agent-step-react', 'agent-step-deep'].forEach(function(stepId) {
     var item = document.getElementById(stepId);
     if (!item) return;
@@ -6642,14 +6793,26 @@ async function applyAgentRunDone(event) {
     if (icon) icon.innerHTML = ico(event.ok !== false ? 'check-circle' : 'x-circle', 'icon-sm');
     var detail = item.querySelector('.solving-answer');
     if (detail) {
-      detail.textContent = event.ok !== false ? '已完成' : '未完全成功';
+      if (!qualityState.solveOk) {
+        detail.textContent = '未完全成功';
+      } else if (qualityState.verifyPass === false) {
+        detail.textContent = '待复核';
+      } else if (qualityState.verifyPass === true) {
+        detail.textContent = '校验通过';
+      } else {
+        detail.textContent = '已完成';
+      }
     }
   });
   if (!isAutonomousRunMode()) {
     updateAgentProgress(
       document.querySelectorAll('.solving-item.done').length,
       agentPlanSteps.length,
-      event.ok !== false ? '全部完成' : '部分失败'
+      agentRunProgressLabel(
+        event.ok !== false,
+        event.run_summary,
+        event.verification_report || agentVerificationReport,
+      ),
     );
   }
   if (Array.isArray(event.thought_trace) && event.thought_trace.length) {
@@ -6686,10 +6849,19 @@ function finishAgentRunUI(success) {
   });
 
   updateStep3CompletionActions();
+  updateStep3QualityBanner(
+    success,
+    lastRunSummary,
+    agentVerificationReport,
+  );
   if (success && solvedAnswers.length) {
     const settings = readSettings();
     onSolveComplete(settings);
     updateAgentVersionUI();
+    const q = resolveRunQualityState(success, lastRunSummary, agentVerificationReport);
+    if (q.verifyPass === false) {
+      showToast('答案已生成，但校验仍有未通过项 — 请查看质量提示与「校验清单」', 'warning');
+    }
   } else if (!success) {
     showToast('执行未完全成功，可返回修改计划后重试', 'warning');
   } else if (agentVerificationReport && agentVerificationReport.passed === false) {

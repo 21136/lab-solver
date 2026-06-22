@@ -187,11 +187,12 @@ def execute_deep_run(
         emit=on_decision,
     )
 
-    if understand.get("summary"):
-        _emit_thought(emit, "understand", str(understand.get("summary", ""))[:2000])
-
     mixed_assignment = is_mixed_assignment_run(ctx, steps)
     code_cloze = is_code_cloze_run(ctx, steps)
+    summary = str(understand.get("summary") or "").strip()
+    if summary and not understand.get("cloze_fast_path"):
+        if not (understand.get("degraded") and (code_cloze or mixed_assignment)):
+            _emit_thought(emit, "understand", summary[:2000])
     solve_step = next((s for s in steps if s.get("module") == "solve_lab"), None)
     if solve_step is None and not code_cloze and not mixed_assignment:
         solve_step = {"module": "solve_lab", "params": {}, "default_checked": True}

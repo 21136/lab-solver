@@ -504,6 +504,13 @@
                 <button type="button" class="btn-ghost" id="step3BackBtn" onclick="goToStep(2)">← 返回</button>
               </div>
             </div>
+            <div class="step3-quality-banner is-hidden" id="step3QualityBanner" role="status" aria-live="polite">
+              <span class="step3-quality-icon" id="step3QualityIcon" aria-hidden="true"></span>
+              <div class="step3-quality-copy">
+                <strong id="step3QualityTitle"></strong>
+                <span class="form-hint" id="step3QualityHint"></span>
+              </div>
+            </div>
             <div class="step3-layout" id="step3Layout">
               <div class="step3-main">
                 <div class="agent-progress-wrap is-hidden" id="agentProgressWrap">
@@ -602,6 +609,7 @@
                 </div>
 
                 <div class="agent-verify-wrap is-hidden" id="agentVerifyWrap">
+                  <div class="agent-verify-remediation-summary is-hidden" id="agentVerifyRemediationSummary" role="alert"></div>
                   <div class="agent-verify-header">
                     <h4>校验清单</h4>
                     <button type="button" class="btn-ghost btn-sm" onclick="runAgentVerify()">重新校验</button>
