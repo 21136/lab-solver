@@ -74,16 +74,28 @@ if not exist "node_modules\electron\package.json" (
     echo npm 依赖已就绪
 )
 
-echo 启动应用...
-call npm start
-if errorlevel 1 (
+:: 避免部分 Windows 显卡驱动导致 Electron 一打开就闪退
+set "LAB_SOLVER_DISABLE_GPU=1"
+set "ELECTRON_ENABLE_LOGGING=1"
+
+echo 启动应用（日志写入 startup.log）...
+call npm start >> "%~dp0startup.log" 2>&1
+set "EXIT_CODE=%ERRORLEVEL%"
+if not "%EXIT_CODE%"=="0" (
     echo.
-    echo [错误] 应用未能启动。常见原因:
+    echo [错误] 应用未能启动（退出码 %EXIT_CODE%）。常见原因:
     echo   1. 5199 端口被占用 — 关闭其他解题能手窗口或结束残留 python.exe
     echo   2. node_modules 损坏 — 删除 node_modules 文件夹后重新运行本脚本
     echo   3. 杀毒软件拦截 electron — 将项目目录加入白名单
+    echo   4. 显卡驱动冲突 — 已默认关闭 GPU 加速；仍闪退请看 startup.log 与 crash.log
+    echo.
+    echo 详细日志: %~dp0startup.log
+    echo 崩溃日志: %LOCALAPPDATA%\lab-solver\crash.log
+    echo.
+    echo --- startup.log 末尾 ---
+    powershell -NoProfile -Command "if (Test-Path '%~dp0startup.log') { Get-Content '%~dp0startup.log' -Tail 40 }"
     pause
-    exit /b 1
+    exit /b %EXIT_CODE%
 )
 
 endlocal

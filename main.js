@@ -3,8 +3,70 @@ const path = require('path');
 const { spawn, execSync } = require('child_process');
 const http = require('http');
 const fs = require('fs');
+const os = require('os');
 const { detectTerminalEnv } = require('./src/main/terminal-detect');
 const { registerSettingsStoreIpc } = require('./src/main/settings-store');
+
+// Windows 上部分显卡驱动会导致 Electron 一打开就闪退；start.bat 默认开启此选项
+if (process.env.LAB_SOLVER_DISABLE_GPU === '1') {
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+}
+
+function getCrashLogPath() {
+  try {
+    return path.join(app.getPath('userData'), 'crash.log');
+  } catch {
+    return path.join(os.tmpdir(), 'lab-solver-crash.log');
+  }
+}
+
+function writeCrashLog(label, err) {
+  try {
+    const filePath = getCrashLogPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const detail = err && err.stack ? err.stack : String(err);
+    const line = `[${new Date().toISOString()}] ${label}\n${detail}\n\n`;
+    fs.appendFileSync(filePath, line, 'utf8');
+    return filePath;
+  } catch {
+    return '';
+  }
+}
+
+function showFatalError(title, message, logPath) {
+  const suffix = logPath ? `\n\n日志已写入:\n${logPath}` : '';
+  try {
+    dialog.showErrorBox(title, `${message}${suffix}`);
+  } catch {
+    console.error(title, message);
+  }
+}
+
+process.on('uncaughtException', (err) => {
+  const logPath = writeCrashLog('uncaughtException', err);
+  showFatalError('解题能手启动失败', err.message || String(err), logPath);
+  try {
+    app.exit(1);
+  } catch {
+    process.exit(1);
+  }
+});
+
+process.on('unhandledRejection', (reason) => {
+  writeCrashLog('unhandledRejection', reason);
+});
+
+app.on('render-process-gone', (_event, _webContents, details) => {
+  writeCrashLog('render-process-gone', JSON.stringify(details, null, 2));
+});
+
+app.on('child-process-gone', (_event, details) => {
+  if (details && details.type === 'GPU') {
+    writeCrashLog('gpu-process-gone', JSON.stringify(details, null, 2));
+  }
+});
 
 let mainWindow;
 let pythonProcess;
@@ -111,6 +173,7 @@ function startPythonServer() {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PYTHONUNBUFFERED: '1' },
       detached: false,
+      windowsHide: true,
     });
     pythonPid = pythonProcess.pid;
     console.log(`Python PID: ${pythonPid}`);
@@ -186,6 +249,19 @@ async function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'src', 'renderer', 'index.html'));
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    const msg = `页面加载失败 (${errorCode}): ${errorDescription} — ${validatedURL}`;
+    console.error(msg);
+    writeCrashLog('did-fail-load', msg);
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    const msg = `渲染进程异常退出: ${details.reason || 'unknown'}`;
+    console.error(msg);
+    const logPath = writeCrashLog('window-render-process-gone', JSON.stringify(details, null, 2));
+    showFatalError('解题能手界面崩溃', `${msg}\n\n可尝试重新运行 start.bat（已默认关闭 GPU 加速）。`, logPath);
+  });
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
@@ -332,27 +408,42 @@ ipcMain.handle('detect-terminal-env', async (event, currentFilePath) => {
 app.whenReady().then(async () => {
   console.log('启动解题能手...');
 
-  // 先创建窗口（显示loading）
-  await createWindow();
-
-  // 启动Python后端
   try {
-    await startPythonServer();
-    await waitForServer();
-    console.log('Python服务就绪');
-    serverReady = true;
-    serverStartError = '';
-    mainWindow?.webContents.send('server-ready');
+    // 先创建窗口（显示loading）
+    await createWindow();
+
+    // 启动Python后端
+    try {
+      await startPythonServer();
+      await waitForServer();
+      console.log('Python服务就绪');
+      serverReady = true;
+      serverStartError = '';
+      mainWindow?.webContents.send('server-ready');
+    } catch (err) {
+      console.error('后端启动失败:', err);
+      serverReady = false;
+      serverStartError = (err && err.message) ? err.message : String(err);
+      mainWindow?.webContents.send('server-error', err.message);
+    }
   } catch (err) {
-    console.error('后端启动失败:', err);
-    serverReady = false;
-    serverStartError = (err && err.message) ? err.message : String(err);
-    mainWindow?.webContents.send('server-error', err.message);
+    console.error('应用初始化失败:', err);
+    const logPath = writeCrashLog('app-init-failed', err);
+    showFatalError(
+      '解题能手无法启动',
+      (err && err.message) ? err.message : String(err),
+      logPath,
+    );
+    app.exit(1);
   }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+}).catch((err) => {
+  const logPath = writeCrashLog('whenReady-failed', err);
+  showFatalError('解题能手无法启动', err.message || String(err), logPath);
+  app.exit(1);
 });
 
 app.on('window-all-closed', () => {
