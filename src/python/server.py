@@ -122,7 +122,15 @@ from agent.run_control import (
     run_exists,
     try_acquire_or_queue,
 )
-from agent.user_profile import load_profile, merge_profile, normalize_profile, save_profile, record_revise_tags
+from agent.user_profile import (
+    compute_keep_rate_summary,
+    load_profile,
+    merge_profile,
+    normalize_profile,
+    record_behavior_outcome,
+    record_revise_tags,
+    save_profile,
+)
 from agent.template_analyzer import prepare_format_spec_for_session
 from modules.parse_answer_template import parse_answer_template
 
@@ -354,6 +362,49 @@ def put_profile():
         return jsonify({"error": "需要 profile 对象"}), 400
     saved = save_profile(body)
     return jsonify({"profile": saved, "schema_version": SETTINGS_SCHEMA_VERSION})
+
+
+@app.route("/api/profile/behavior-outcome", methods=["POST"])
+def post_behavior_outcome():
+    """Record local C2 outcome event (copy / export / revise) for Keep rate."""
+    data = request.json or {}
+    event = (data.get("event") or "").strip()
+    if not event:
+        return jsonify({"error": "缺少 event"}), 400
+    profile = merge_profile(load_profile(), data.get("profile"))
+    updated = record_behavior_outcome(
+        profile,
+        event,
+        section=(data.get("section") or "").strip(),
+        run_id=(data.get("run_id") or data.get("runId") or "").strip(),
+        format=(data.get("format") or "").strip(),
+    )
+    saved = save_profile(updated)
+    summary = compute_keep_rate_summary(saved)
+    return jsonify(
+        {
+            "ok": True,
+            "profile": saved,
+            "keep_rate": summary,
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+    )
+
+
+@app.route("/api/agent/run-metrics", methods=["GET"])
+def get_agent_run_metrics():
+    from agent.run_metrics import aggregate_run_events
+
+    max_files = request.args.get("max_files", type=int) or 30
+    max_age = request.args.get("max_age_days", type=int) or 7
+    profile = load_profile()
+    return jsonify(
+        {
+            "run_events": aggregate_run_events(max_files=max_files, max_age_days=max_age),
+            "keep_rate": compute_keep_rate_summary(profile),
+            "schema_version": SETTINGS_SCHEMA_VERSION,
+        }
+    )
 
 
 @app.route("/api/skill-candidates", methods=["GET"])
@@ -968,7 +1019,8 @@ def agent_plan():
             question["type"] = "mixed_assignment"
             metadata["question_type"] = "mixed_assignment"
         steps = plan.get("steps", [])
-        fingerprint = plan.get("plan_fingerprint") or compute_plan_fingerprint(
+        # Recompute after question-type overrides (steps may differ from plan_from_report).
+        fingerprint = compute_plan_fingerprint(
             planner_input,
             steps,
             document_ids=document_ids,
@@ -1223,6 +1275,20 @@ def agent_run():
             ctx["auto_remediate"] = run_mode in ("standard", "deep")
         ctx["auto_remediate_max_rounds"] = _auto_remediate_max_rounds_from_request(data)
         ctx["max_replan_rounds"] = _max_replan_rounds_from_request(data)
+        if "llm_replan" in data:
+            ctx["llm_replan"] = bool(data.get("llm_replan"))
+        elif "llmReplan" in data:
+            ctx["llm_replan"] = bool(data.get("llmReplan"))
+        else:
+            settings_llm = (ctx.get("settings") or {}).get("llmReplan")
+            ctx["llm_replan"] = settings_llm is not False
+        if "auto_promote_skills" in data:
+            ctx["auto_promote_skills"] = bool(data.get("auto_promote_skills"))
+        elif "autoPromoteSkills" in data:
+            ctx["auto_promote_skills"] = bool(data.get("autoPromoteSkills"))
+        else:
+            settings_promote = (ctx.get("settings") or {}).get("autoPromoteSkills")
+            ctx["auto_promote_skills"] = settings_promote is not False
         ctx["replan_rounds"] = 0
         ctx["understand"] = data.get("understand") or {}
         if data.get("module_results"):

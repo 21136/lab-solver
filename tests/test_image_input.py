@@ -477,7 +477,7 @@ class TestIm2bSettings:
     def test_settings_schema_ocr_defaults(self):
         from settings_schema import SETTINGS_DEFAULTS, SETTINGS_SCHEMA_VERSION
 
-        assert SETTINGS_SCHEMA_VERSION == 10
+        assert SETTINGS_SCHEMA_VERSION == 12
         assert SETTINGS_DEFAULTS["autoFastTierForLightQuestions"] is True
         assert SETTINGS_DEFAULTS["enableParallelModuleSteps"] is True
         assert SETTINGS_DEFAULTS["solvePipelineVersion"] == "v4"
@@ -488,6 +488,9 @@ class TestIm2bSettings:
         assert SETTINGS_DEFAULTS["imageReadingMode"] == "ocr_only"
         assert SETTINGS_DEFAULTS["imageOcrMaxPages"] == 20
         assert SETTINGS_DEFAULTS["imageVisionMaxPages"] == 5
+        assert SETTINGS_DEFAULTS["optimizePlanFromUsage"] is True
+        assert SETTINGS_DEFAULTS["llmReplan"] is True
+        assert SETTINGS_DEFAULTS["autoPromoteSkills"] is True
 
 
 class TestIm2bOcrWarnings:

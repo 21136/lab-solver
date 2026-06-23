@@ -64,9 +64,13 @@ def test_cancel_uml_three_times_unchecks_on_plan():
     assert "历史习惯" in uml.get("reason", "")
 
 
-def test_behavior_disabled_by_default():
+def test_behavior_enabled_by_default():
     profile = load_profile()
-    assert profile.get("optimize_plan_from_usage") is False
+    assert profile.get("optimize_plan_from_usage") is True
+
+
+def test_behavior_respects_explicit_opt_out():
+    profile = normalize_profile({"optimize_plan_from_usage": False})
     steps = [{"module": "render_uml", "default_checked": True}]
     assert apply_behavior_to_steps(steps, profile) == steps
 

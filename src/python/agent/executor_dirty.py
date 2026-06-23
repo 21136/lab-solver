@@ -259,87 +259,30 @@ def code_status_from_ctx(ctx: dict[str, Any] | None) -> str:
     return str(meta.get("code_status") or "")
 
 
-def _is_code_cloze_verify_ctx(ctx: dict[str, Any] | None) -> bool:
-    if not ctx:
-        return False
-    from agent.cloze_run import is_code_cloze_run
-
-    steps = ctx.get("confirmed_steps") or (ctx.get("plan") or {}).get("steps") or []
-    if is_code_cloze_run(ctx, steps):
-        return True
-    solve = ((ctx.get("module_results") or {}).get("solve_code_cloze") or {}).get("data") or {}
-    return solve.get("type") == "code_cloze"
-
-
 def modules_to_rerun_from_verify(
     suggested_actions: list[str],
     ctx: dict[str, Any] | None = None,
 ) -> list[str]:
     """Map verify_answer suggested_actions to executor module ids."""
+    from agent.dirty_state import modules_for_verify_actions
+
     verified = code_status_from_ctx(ctx) == "verified"
-    code_cloze_run = _is_code_cloze_verify_ctx(ctx)
-    out: list[str] = []
-    for action in suggested_actions or []:
-        a = (action or "").strip().lower()
-        if a == "fix_code":
-            if verified:
-                continue
-            out.extend(["fix_code", "run_code"])
-        elif a == "fix_diagrams":
-            out.extend(["fix_diagrams", "render_uml"])
-        elif a == "render_uml":
-            out.append("render_uml")
-        elif a.startswith("revise_section:"):
-            if verified:
-                out.append("revise_answer")
-            else:
-                out.append("fill_report")
-        elif a == "revise_full":
-            if verified:
-                out.append("revise_answer")
-            elif code_cloze_run:
-                out.append("solve_code_cloze")
-            else:
-                out.append("solve_lab")
-    return list(dict.fromkeys(out))
+    return modules_for_verify_actions(suggested_actions, ctx, verified=verified)
 
 
 def mark_dirty_from_verify(ctx: dict[str, Any], suggested_actions: list[str]) -> list[str]:
     """Mark modules dirty from verify suggested_actions so remediate reruns them."""
+    from agent.dirty_state import apply_verify_dirty_metadata
+
     modules = modules_to_rerun_from_verify(suggested_actions, ctx)
     existing = set(ctx.get("dirty_modules") or [])
     existing.update(modules)
     ctx["dirty_modules"] = sorted(existing)
     verified = code_status_from_ctx(ctx) == "verified"
-
-    for action in suggested_actions or []:
-        a = (action or "").strip().lower()
-        if a == "revise_full":
-            if verified:
-                if _is_code_cloze_verify_ctx(ctx):
-                    ctx["dirty_fields"] = {"solve_code_cloze": ["blanks"]}
-                else:
-                    ctx["dirty_fields"] = {
-                        "solve_lab": ["steps_analysis", "result_description", "summary", "expected_output"]
-                    }
-            elif _is_code_cloze_verify_ctx(ctx):
-                ctx["dirty_fields"] = {"solve_code_cloze": ["full"]}
-            else:
-                ctx["dirty_fields"] = {"solve_lab": ["full"]}
-            ctx["fill_sections"] = None
-            break
-        if a == "fix_diagrams":
-            ctx["dirty_fields"] = {"solve_lab": ["diagrams"]}
-            break
-        if a.startswith("revise_section:"):
-            section = a.split(":", 1)[-1].strip()
-            if verified:
-                ctx["dirty_fields"] = {"solve_lab": [section]}
-            elif section:
-                ctx["fill_sections"] = fill_sections_for_groups({section}, ctx=ctx) or [section]
-            break
-        if a == "fix_code" and not verified:
-            ctx["dirty_fields"] = {"solve_lab": ["code"]}
-            break
-
+    apply_verify_dirty_metadata(
+        ctx,
+        suggested_actions,
+        verified=verified,
+        fill_sections_for_groups=fill_sections_for_groups,
+    )
     return list(ctx["dirty_modules"])

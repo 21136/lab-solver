@@ -258,6 +258,50 @@ PLANNER_USER = """你是一名大学实验报告解题助手。根据【实验�
 }}
 ```"""
 
+REPLAN_USER = """你是实验报告解题助手。执行中某步骤失败，请根据失败信息**重规划尚未完成的步骤**（只输出 JSON）。
+
+【可用模块】
+{module_catalog}
+
+【作业节选】
+{assignment_excerpt}
+
+【已完成模块】
+{completed_modules}
+
+【失败模块】
+{failed_module}
+
+【错误摘要】
+{error_summary}
+
+{v4_note}【原计划剩余步骤（参考）】
+{pending_steps_json}
+
+【规则】
+1. 保留已完成模块，不要重复安排。
+2. 针对失败原因调整后续步骤（如 run_code 失败可插入 fix_code；solve_lab 失败可重试或换策略）。
+3. 每个步骤含 module、params、reason、evidence、source、confidence、default_checked。
+4. V4 开启时 solve_lab 已含内化验证，勿默认加入 run_code。
+5. 计划末尾应含 present_deliverable（除非仅 fill_report 场景）。
+
+输出 JSON：
+```json
+{{
+  "steps": [
+    {{
+      "module": "fix_code",
+      "params": {{}},
+      "reason": "…",
+      "evidence": "",
+      "source": "replan",
+      "confidence": "medium",
+      "default_checked": true
+    }}
+  ]
+}}
+```"""
+
 UNDERSTAND_PLAN_USER = """你是实验报告解题规划专家。先**理解**作业要求，再给出**执行计划**（只输出 JSON）。
 
 【作业原文节选】
@@ -527,6 +571,43 @@ def render_plan_prompt(
     )
 
 
+def render_replan_prompt(
+    *,
+    assignment_excerpt: str,
+    completed_modules: list[str],
+    failed_module: str,
+    error_summary: str,
+    pending_steps: list[dict],
+    module_catalog: list[str] | None = None,
+    v4_pipeline: bool = False,
+) -> str:
+    import json
+
+    catalog = module_catalog or [
+        "solve_lab",
+        "solve_theory",
+        "solve_code_cloze",
+        "run_code",
+        "fix_code",
+        "render_uml",
+        "fix_diagrams",
+        "present_deliverable",
+    ]
+    v4_note = ""
+    if v4_pipeline:
+        v4_note = "【V4】solve_lab 已含内化验证，勿默认 run_code。\n"
+    pending_json = json.dumps(pending_steps, ensure_ascii=False, indent=2)[:3000]
+    return PROMPTS["replan"].render(
+        module_catalog=", ".join(catalog),
+        assignment_excerpt=assignment_excerpt[:2500],
+        completed_modules=", ".join(completed_modules) or "（无）",
+        failed_module=failed_module or "unknown",
+        error_summary=(error_summary or "")[:500],
+        pending_steps_json=pending_json,
+        v4_note=v4_note,
+    )
+
+
 PROMPTS: dict[str, PromptTemplate] = {
     "planner": PromptTemplate(
         name="planner",
@@ -534,6 +615,13 @@ PROMPTS: dict[str, PromptTemplate] = {
         user_template=PLANNER_USER,
         output_schema="plan_json_v1",
         changelog="AO-9: C2 behavior_hints_block from failure_modules",
+    ),
+    "replan": PromptTemplate(
+        name="replan",
+        version="1.0.0",
+        user_template=REPLAN_USER,
+        output_schema="plan_json_v1",
+        changelog="AGENT_CAPABILITY_GAPS: LLM replan on module failure",
     ),
     "section_brief": PromptTemplate(
         name="section_brief",

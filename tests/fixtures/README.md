@@ -65,6 +65,22 @@ python -m pytest tests/test_solve_pipeline_golden.py -m golden_sandbox -s
 
 ---
 
+## IR-18 — Agent plan→run 矩阵 E2E（mock LLM）
+
+| Case ID | Fixture | 题型 / 布局 |
+|---------|---------|-------------|
+| `programming_lab` | `programming_lab.docx` | 编程实验 |
+| `code_cloze_singleton` | `code_cloze_singleton.docx` | 代码填空 |
+| `theory_lab` | `theory_lab.docx` | 理论分析（剔除 run_code） |
+| `training_table` | `training_table.docx` | 实训表格 → short_answer |
+| `mixed_theory_cloze` | `mixed_theory_cloze.docx` | 混排简答 + 填空 |
+
+```bash
+python -m pytest tests/test_agent_fixture_e2e.py -v
+```
+
+---
+
 ## 统一入口
 
 ```bash

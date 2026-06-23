@@ -63,6 +63,7 @@ LLM 在解题过程中自述的判断依据、边界情况、环境适配决定�
    - `java-multi-file`: 当 Java 多类项目时，提醒拆分文件到 code_files
 5. **AO-10 promote 流程**（2026-06-06）：
    - 运行结束自动写入 `%APPDATA%/lab-solver/skill_candidates.json`（`record_skill_candidates_from_run`）
+   - **自动晋升**（2026-06-12）：7 天内同类 `error_category` ≥2 次 → 自动写入 `promoted_skills.json`（设置 `autoPromoteSkills` 可关；`notes_hash` 仍须手动）
    - 设置 → AI 配置 → **技能候选**：浏览 `status: pending` 条目，编辑注入文本，点「写入 skill_store」
    - API：`GET /api/skill-candidates`、`POST /api/skill-candidates/promote`（body: `{ id, inject? }`）
    - 成功后写入 `%APPDATA%/lab-solver/promoted_skills.json` 并运行时注册；若可写则追加本文件 Promoted 记录
@@ -605,3 +606,27 @@ LLM 在解题过程中自述的判断依据、边界情况、环境适配决定�
 **注入文本**:
 
 【技能候选 notes_hash-21cb1b1561eb】根据历史运行经验，请注意与此触发相关的常见错误模式。
+
+## 2026-06-12
+
+### Promoted skill: `error_category-compile_error`
+
+**来源候选**: error_category:compile_error
+
+**触发器**: `run_code.error_category=compile_error`
+
+**注入文本**:
+
+编译错误时检查文件扩展名与语法是否匹配。
+
+## 2026-06-12
+
+### Promoted skill: `error_category-compile_error`
+
+**来源候选**: error_category:compile_error
+
+**触发器**: `run_code.error_category=compile_error`
+
+**注入文本**:
+
+编译错误时检查文件扩展名与语法是否匹配。

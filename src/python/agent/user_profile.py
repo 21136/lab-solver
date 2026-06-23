@@ -1,7 +1,7 @@
 """
 User profile v1 (Phase 2b B4) + C2 behavior learning (V3-4).
 
-Behavior stats are local-only, gated by ``optimize_plan_from_usage`` (default off).
+Behavior stats are local-only, gated by ``optimize_plan_from_usage`` (default on).
 """
 
 from __future__ import annotations
@@ -18,19 +18,21 @@ PROFILE_PATH = APP_DATA / "profile.json"
 
 BEHAVIOR_MIN_SAMPLES = 3
 _BEHAVIOR_LIST_MAX = 50
+_OUTCOMES_MAX = 200
 
 DEFAULT_BEHAVIOR: dict[str, Any] = {
     "module_cancel_count": {},
     "revise_tags": [],
     "replan_reasons": [],
     "failure_modules": [],
+    "outcomes": [],
 }
 
 DEFAULT_PROFILE: dict[str, Any] = {
     "schema_version": PROFILE_SCHEMA_VERSION,
     "default_language": "java",
     "prefer_uml": False,
-    "optimize_plan_from_usage": False,
+    "optimize_plan_from_usage": True,
     "behavior": deepcopy(DEFAULT_BEHAVIOR),
 }
 
@@ -61,6 +63,21 @@ def normalize_behavior(behavior: Optional[dict] = None) -> dict[str, Any]:
         val = behavior.get(key)
         if isinstance(val, list):
             merged[key] = [str(x) for x in val if x is not None][-_BEHAVIOR_LIST_MAX:]
+    outcomes = behavior.get("outcomes")
+    if isinstance(outcomes, list):
+        cleaned: list[dict[str, Any]] = []
+        for item in outcomes[-_OUTCOMES_MAX:]:
+            if isinstance(item, dict) and item.get("event"):
+                cleaned.append(
+                    {
+                        "event": str(item.get("event")),
+                        "at": str(item.get("at") or ""),
+                        "section": str(item.get("section") or ""),
+                        "run_id": str(item.get("run_id") or ""),
+                        "format": str(item.get("format") or ""),
+                    }
+                )
+        merged["outcomes"] = cleaned
     return merged
 
 
@@ -265,6 +282,71 @@ def apply_behavior_to_steps(steps: list[dict], profile: dict) -> list[dict]:
                 s["reason"] = f"{reason}{_FAILURE_HINT}".strip() if reason else _FAILURE_HINT.strip("（）")
         out.append(s)
     return out
+
+
+def record_behavior_outcome(
+    profile: dict,
+    event: str,
+    *,
+    section: str = "",
+    run_id: str = "",
+    format: str = "",
+) -> dict[str, Any]:
+    """Record user adoption signal (copy / export / revise) for Keep rate."""
+    from datetime import datetime, timezone
+
+    p = normalize_profile(profile)
+    if not _behavior_enabled(p):
+        return p
+    ev = (event or "").strip()
+    if not ev:
+        return p
+    behavior = p["behavior"]
+    outcomes = behavior.setdefault("outcomes", [])
+    if not isinstance(outcomes, list):
+        outcomes = []
+        behavior["outcomes"] = outcomes
+    outcomes.append(
+        {
+            "event": ev,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "section": (section or "").strip(),
+            "run_id": (run_id or "").strip(),
+            "format": (format or "").strip(),
+        }
+    )
+    if len(outcomes) > _OUTCOMES_MAX:
+        del outcomes[: len(outcomes) - _OUTCOMES_MAX]
+    return p
+
+
+def compute_keep_rate_summary(profile: dict | None = None) -> dict[str, Any]:
+    """Aggregate local outcome events into keep-rate style counters."""
+    p = normalize_profile(profile)
+    outcomes = (p.get("behavior") or {}).get("outcomes") or []
+    if not isinstance(outcomes, list):
+        outcomes = []
+    counts: dict[str, int] = {}
+    for item in outcomes:
+        if not isinstance(item, dict):
+            continue
+        ev = str(item.get("event") or "")
+        if ev:
+            counts[ev] = int(counts.get(ev) or 0) + 1
+    copy_events = int(counts.get("copy_section") or 0)
+    export_events = sum(
+        int(counts.get(k) or 0) for k in ("export_markdown", "export_docx", "export_deliverable")
+    )
+    revise_events = int(counts.get("revise_submit") or 0)
+    total_positive = copy_events + export_events
+    return {
+        "outcome_counts": counts,
+        "copy_section": copy_events,
+        "export_events": export_events,
+        "revise_submit": revise_events,
+        "keep_signals": total_positive,
+        "outcome_total": len(outcomes),
+    }
 
 
 def persist_run_behavior_from_ctx(ctx: dict) -> None:

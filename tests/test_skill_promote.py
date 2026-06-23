@@ -22,6 +22,7 @@ def _isolate_skill_paths(tmp_path, monkeypatch):
 def _seed_pending_candidate():
     ctx = {
         "run_id": "r1",
+        "auto_promote_skills": False,
         "module_results": {
             "run_code": {"ok": False, "data": {"error_category": "compile_error"}},
         },
